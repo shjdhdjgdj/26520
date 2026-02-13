@@ -5,7 +5,7 @@ package config;
  Real VARIABLES.java will be injected locally on each machine.
 */
 
-class VARIABLES {
+class VARIABLES_TEMPLATE {
 
     static String EXCEL_FILE_PATH = "";
     static String VOTER_FILE_PATH = "";
