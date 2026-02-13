@@ -3,6 +3,8 @@ package com.mainMethod.automation;
 import java.time.Duration;
 import java.util.NoSuchElementException;
 import java.util.Scanner;
+import java.io.FileInputStream;
+import java.util.Properties;
 
 import org.openqa.selenium.By;
 import org.openqa.selenium.JavascriptExecutor;
@@ -33,25 +35,22 @@ public class MainRunnerClass {
 		System.out.println("Enter 1 for Chrome");
 		System.out.println("Enter 2 for Mozilla Firefox");
 
-		Scanner sc = new Scanner(System.in);
-		int browserChoice = sc.nextInt();
+		Properties prop = new Properties();
+		prop.load(new FileInputStream("src/main/resources/config.properties"));
+		String browser = prop.getProperty("browser");
 
-		switch (browserChoice) {
-		case 1:
-			WebDriverManager.chromedriver().setup();
-			driver = new ChromeDriver();
-			driver.manage().window().maximize();
-			break;
-		case 2:
-			WebDriverManager.firefoxdriver().setup();
-			driver = new FirefoxDriver();
-			driver.manage().window().maximize();
-			break;
-		default:
-			System.out.println("Invalid choice.");
-			break;
+		if(browser.equalsIgnoreCase("chrome")) {
+   		 	WebDriverManager.chromedriver().setup();
+    		driver = new ChromeDriver();
 		}
-
+		else if(browser.equalsIgnoreCase("firefox")) {
+    		WebDriverManager.firefoxdriver().setup();
+    		driver = new FirefoxDriver();
+		}
+		else {
+    		throw new RuntimeException("Invalid browser in config.properties");
+		}
+		
 		pom = new PageBean(driver);
 		try {
 			driver.get(VARIABLES.SIGN_IN_PAGE_URL);
