@@ -2,13 +2,20 @@
 VARIABLES.java
 config.properties
 
+# drivers (must be local per machine)
+drivers/
+*.exe
+
 # build
 /target/
 /bin/
 
 # reports
 /test-output/
-/surefire-reports/
+surefire-reports/
+*.xml
+*.log
+*.html
 
 # runtime data
 /logs/
@@ -19,6 +26,9 @@ config.properties
 .project
 .classpath
 .settings/
+
+# maven wrapper cache
+.mvn/wrapper/maven-wrapper.jar
 
 # OS
 .DS_Store
