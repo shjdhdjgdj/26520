@@ -1,4 +1,5 @@
 package Freelance.com.projectSetup;
+import config.VARIABLES;
 
 import java.io.File;
 import java.io.FileInputStream;
