@@ -64,7 +64,7 @@ public class MainRunnerClass {
 		wait = new WebDriverWait(driver, Duration.ofSeconds(3));
 
 		try {
-			pom.login(VARIABLES.EMAIL, VARIABLES.PASSWORD, 2, 2);
+			pom.login(VARIABLES.EMAIL, VARIABLES.PASSWORD, 2, 1);
 			openNewTab();
 			driver.get(VARIABLES.NEW_REGISTRATION_URL);
 		} catch (NoSuchElementException | InterruptedException e) {
