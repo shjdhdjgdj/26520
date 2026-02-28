@@ -24,170 +24,220 @@ import io.github.bonigarcia.wdm.WebDriverManager;
 
 public class MainRunnerClass {
 
-	private WebDriver driver;
-	static WebDriverWait wait;
-	private PageBean pom;
+    private WebDriver driver;
+    static WebDriverWait wait;
+    private PageBean pom;
+    
+    // Track current row for static counter approach (alternative)
+    private static int currentRow = 1;
 
-	@BeforeSuite
-	public void beforeSuite() throws InterruptedException {
+    @BeforeSuite
+    public void beforeSuite() throws InterruptedException {
 
-		Properties prop = new Properties();
-		try (FileInputStream fis = new FileInputStream("config.properties")) {
-			prop.load(fis);
-			} catch (Exception e) {
-				throw new RuntimeException("config.properties not found in AutomationClient folder", e);
-			}
-			String browser = prop.getProperty("browser");
-			
-		if(browser.equalsIgnoreCase("chrome")) {
-   		 	WebDriverManager.chromedriver().setup();
-    		driver = new ChromeDriver();
-		}
-		else if(browser.equalsIgnoreCase("firefox")) {
-    		WebDriverManager.firefoxdriver().setup();
-    		driver = new FirefoxDriver();
-		}
-		else {
-    		throw new RuntimeException("Invalid browser in config.properties");
-		}
+        Properties prop = new Properties();
+        try (FileInputStream fis = new FileInputStream("config.properties")) {
+            prop.load(fis);
+        } catch (Exception e) {
+            throw new RuntimeException("config.properties not found in AutomationClient folder", e);
+        }
+        String browser = prop.getProperty("browser");
 
-		driver.manage().window().maximize();
-		driver.manage().timeouts().implicitlyWait(Duration.ofSeconds(10));
-		
-		pom = new PageBean(driver);
-		try {
-			driver.get(VARIABLES.SIGN_IN_PAGE_URL);
-		} catch (NoSuchElementException e) {
-			checkElementWithRetries(VARIABLES.SIGN_IN_PAGE_URL, "//*[contains(text(),'Insurance Log In')]", 10, 3);
-		}
+        if (browser.equalsIgnoreCase("chrome")) {
+            WebDriverManager.chromedriver().setup();
+            driver = new ChromeDriver();
+        } else if (browser.equalsIgnoreCase("firefox")) {
+            WebDriverManager.firefoxdriver().setup();
+            driver = new FirefoxDriver();
+        } else {
+            throw new RuntimeException("Invalid browser in config.properties");
+        }
 
-		wait = new WebDriverWait(driver, Duration.ofSeconds(3));
+        driver.manage().window().maximize();
+        driver.manage().timeouts().implicitlyWait(Duration.ofSeconds(10));
 
-		try {
-			pom.login(VARIABLES.EMAIL, VARIABLES.PASSWORD, 1, 2);
-			openNewTab();
-			driver.get(VARIABLES.NEW_REGISTRATION_URL);
-		} catch (NoSuchElementException | InterruptedException e) {
-			e.printStackTrace();
-			System.out.println("Error");
-			checkElementWithRetries(VARIABLES.NEW_REGISTRATION_URL, "//h4[contains(text(),'SBI GENERAL INSURANCE COMPANY LIMITED')]",
-					5, 5);
-		} 
-	}
+        pom = new PageBean(driver);
+        try {
+            driver.get(VARIABLES.SIGN_IN_PAGE_URL);
+        } catch (NoSuchElementException e) {
+            checkElementWithRetries(VARIABLES.SIGN_IN_PAGE_URL, "//*[contains(text(),'Insurance Log In')]", 10, 3);
+        }
 
-	public void checkElementWithRetries(String url, String xpath, int maxRetries, int maxTabSwitches)
-			throws InterruptedException {
-		boolean error = true;
-		int retryCount = 0;
-		int tabCount = 0;
+        wait = new WebDriverWait(driver, Duration.ofSeconds(3));
 
-		// Outer loop to manage the number of tabs
-		while (error && tabCount < maxTabSwitches) {
-			// Inner loop to handle refreshing and checking the element
-			while (retryCount < maxRetries) {
-				try {
-					// Try to find the element and check if it's displayed
-					if (driver.findElement(By.xpath(xpath)).isDisplayed()) {
-						error = false; // Element found, exit the loop
-						break;
-					} else {
-						driver.navigate().refresh(); // refresh the page
-						Thread.sleep(2000); // wait for 2 seconds before trying again
-					}
-				} catch (NoSuchElementException e) {
-					retryCount++; // increment retry count
-					if (retryCount >= maxRetries) {
-						System.out.println("Max retries reached. Element not found.");
+        try {
+            pom.login(VARIABLES.EMAIL, VARIABLES.PASSWORD, 1, 2);
+            openNewTab();
+            driver.get(VARIABLES.NEW_REGISTRATION_URL);
+        } catch (NoSuchElementException | InterruptedException e) {
+            e.printStackTrace();
+            System.out.println("Error");
+            checkElementWithRetries(VARIABLES.NEW_REGISTRATION_URL,
+                    "//h4[contains(text(),'SBI GENERAL INSURANCE COMPANY LIMITED')]", 5, 5);
+        }
+    }
 
-						// Open a new tab and try loading the page again
-						openNewTab(); // Call the function to open a new tab
-						driver.get(url); // Load the page in the new tab (use the provided URL)
+    public void checkElementWithRetries(String url, String xpath, int maxRetries, int maxTabSwitches)
+            throws InterruptedException {
+        boolean error = true;
+        int retryCount = 0;
+        int tabCount = 0;
 
-						// Reset retry count for the new tab
-						retryCount = 0;
-						tabCount++; // Increment tab count
+        while (error && tabCount < maxTabSwitches) {
+            while (retryCount < maxRetries) {
+                try {
+                    if (driver.findElement(By.xpath(xpath)).isDisplayed()) {
+                        error = false;
+                        break;
+                    } else {
+                        driver.navigate().refresh();
+                        Thread.sleep(2000);
+                    }
+                } catch (NoSuchElementException e) {
+                    retryCount++;
+                    if (retryCount >= maxRetries) {
+                        System.out.println("Max retries reached. Element not found.");
+                        openNewTab();
+                        driver.get(url);
+                        retryCount = 0;
+                        tabCount++;
+                        if (tabCount >= maxTabSwitches) {
+                            System.out.println("Max tab switches reached. Exiting.");
+                            error = false;
+                            break;
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+    }
 
-						// Check if max tab switches have been reached
-						if (tabCount >= maxTabSwitches) {
-							System.out.println("Max tab switches reached. Exiting.");
-							error = false; // Exit the loop after reaching max tab switches
-							break; // Break from the outer loop
-						}
-						break; // Break from the inner while loop to start a new tab
-					}
-				}
-			}
-		}
-	}
+    private void openNewTab() {
+        ((JavascriptExecutor) driver).executeScript("window.open('about:blank', '_blank');");
+        String originalWindow = driver.getWindowHandle();
+        for (String windowHandle : driver.getWindowHandles()) {
+            if (!windowHandle.equals(originalWindow)) {
+                driver.switchTo().window(windowHandle);
+                break;
+            }
+        }
+    }
 
-	private void openNewTab() {
-		((JavascriptExecutor) driver).executeScript("window.open('about:blank', '_blank');");
-		String originalWindow = driver.getWindowHandle();
-		for (String windowHandle : driver.getWindowHandles()) {
-			if (!windowHandle.equals(originalWindow)) {
-				driver.switchTo().window(windowHandle);
-				break;
-			}
-		}
-	}
+    @DataProvider(name = "excelData")
+    public Object[][] testMainMethod() throws InterruptedException {
+        return ExcelUtility.getExcelData();
+    }
 
-	@DataProvider(name = "excelData")
-	public Object[][] testMainMethod() throws InterruptedException {
-		return ExcelUtility.getExcelData();
-	}
+    @Test(dataProvider = "excelData")
+    public void runTests(Object[] data) throws InterruptedException {
+        // Extract row index from position 0 (added in ExcelUtility)
+        int rowIndex = (int) data[0];
+        String status = "PASS";
+        
+        // Alternative: Use static counter if DataProvider not modified
+        // int rowIndex = currentRow++;
 
-	@Test(dataProvider = "excelData")
-	public void runTests(Object[] data) throws InterruptedException {
-		String FarmrName = (String) data[2];
-		String FathrHusName = (String) data[3];
-		String EpicID = (String) data[4];
-		String AadharNo = (String) data[5];
-		String Age = (String) data[7];
-		String Gender = (String) data[8];
-		String Caste = (String) data[9];
-		String MobNo = (String) data[10];
-		String Crop = (String) data[11];
-		String District = (String) data[12];
-		String Block = (String) data[13];
-		String GP = (String) data[14];
-		String Mouza1 = (String) data[15];
-		String KhatianNo1 = (String) data[17];
-		String PlotNo1 = (String) data[18];
-		String AreaInsur1 = (String) data[19];
-		String FarmrCat = (String) data[20];
-		String NatureFarmr1 = (String) data[21];
-		String IFSCode = (String) data[22];
-		String AccNo = (String) data[23];
-		String Vill = (String) data[24];
-		String Pin = (String) data[25];
-		String AccType = (String) data[26];
-		String Relation = (String) data[27];
-		String EpicIDImg = (String) data[29];
-		String ParchaImg = (String) data[30];
+        try {
+            // Extract all fields with shifted indices (+1 because data[0] is row index)
+            String FarmrName = (String) data[3];      // was index 2
+            String FathrHusName = (String) data[4];   // was index 3
+            String EpicID = (String) data[5];         // was index 4
+            String AadharNo = (String) data[6];       // was index 5
+            String Age = (String) data[8];            // was index 7
+            String Gender = (String) data[9];         // was index 8
+            String Caste = (String) data[10];         // was index 9
+            String MobNo = (String) data[11];         // was index 10
+            String Crop = (String) data[12];          // was index 11
+            String District = (String) data[13];      // was index 12
+            String Block = (String) data[14];         // was index 13
+            String GP = (String) data[15];            // was index 14
+            String Mouza1 = (String) data[16];        // was index 15
+            String KhatianNo1 = (String) data[18];    // was index 17
+            String PlotNo1 = (String) data[19];       // was index 18
+            String AreaInsur1 = (String) data[20];    // was index 19
+            String FarmrCat = (String) data[21];      // was index 20
+            String NatureFarmr1 = (String) data[22];  // was index 21
+            String IFSCode = (String) data[23];       // was index 22
+            String AccNo = (String) data[24];         // was index 23
+            String Vill = (String) data[25];          // was index 24
+            String Pin = (String) data[26];           // was index 25
+            String AccType = (String) data[27];       // was index 26
+            String Relation = (String) data[28];      // was index 27
+            String EpicIDImg = (String) data[30];     // was index 29
+            String ParchaImg = (String) data[31];     // was index 30
 
-		checkElementWithRetries(VARIABLES.NEW_REGISTRATION_URL, "//h4[contains(text(),'SBI GENERAL INSURANCE COMPANY LIMITED')]", 10,
-				5);
-		pom.searchPerson(EpicID);
-		if (pom.logicToSkip(Crop, GP)) {
-			throw new SkipException("Consumer already exists. Skipping test.");
-		}
-		pom.dataEntry(AadharNo);
-		pom.farmerDetails(FarmrName, FathrHusName, Relation, Age, Gender, Caste, MobNo, FarmrCat, EpicIDImg,
-				AadharNo);
-		pom.farmerResidentialAddress(District, Block, GP, Vill, Pin);
-		pom.cropDetailsEntry(District, Block, Crop, GP, Mouza1, KhatianNo1, PlotNo1, AreaInsur1, NatureFarmr1,
-				ParchaImg);
-		pom.bankDetailsEntry(FarmrName, AccNo, AccType, IFSCode);
-		pom.submitForm();
-	}
+            // Log which row is being processed
+            System.out.println("▶️ Processing Row " + rowIndex + " - Epic ID: " + EpicID + " - Farmer: " + FarmrName);
 
-	@AfterMethod
-	public void pageRefresh() {
-		driver.navigate().refresh();
-	}
+            // Verify page is loaded
+            checkElementWithRetries(VARIABLES.NEW_REGISTRATION_URL,
+                    "//h4[contains(text(),'SBI GENERAL INSURANCE COMPANY LIMITED')]", 10, 5);
 
-	@AfterSuite
-	public void afterSuite() {
-		driver.quit();
-	}
+            // Search by Epic ID
+            pom.searchPerson(EpicID);
+
+            // Check if record already exists
+            if (pom.logicToSkip(Crop, GP)) {
+                status = "SKIP";
+                System.out.println("⏭️ Skipping Row " + rowIndex + " - Consumer already exists");
+                throw new SkipException("Consumer already exists. Skipping test.");
+            }
+
+            // Fill Aadhar number
+            pom.dataEntry(AadharNo);
+
+            // Fill farmer details
+            pom.farmerDetails(FarmrName, FathrHusName, Relation, Age, Gender, Caste, MobNo, FarmrCat, EpicIDImg,
+                    AadharNo);
+
+            // Fill residential address
+            pom.farmerResidentialAddress(District, Block, GP, Vill, Pin);
+
+            // Fill crop details
+            pom.cropDetailsEntry(District, Block, Crop, GP, Mouza1, KhatianNo1, PlotNo1, AreaInsur1, NatureFarmr1,
+                    ParchaImg);
+
+            // Fill bank details
+            pom.bankDetailsEntry(FarmrName, AccNo, AccType, IFSCode);
+
+            // Submit the form
+            pom.submitForm();
+
+            System.out.println("✅ Row " + rowIndex + " completed successfully");
+
+        } catch (SkipException e) {
+            status = "SKIP";
+            throw e;
+        } catch (Exception e) {
+            status = "FAIL";
+            System.err.println("❌ Row " + rowIndex + " failed: " + e.getMessage());
+            throw e;
+        } finally {
+            // Update Excel with test status
+            // Optional: Add delay before writing status if needed
+            // Thread.sleep(10000);
+            
+            ExcelUtility.updateTestStatus(rowIndex, status);
+            System.out.println("📊 Excel updated: Row " + rowIndex + " = " + status);
+            System.out.println("----------------------------------------");
+        }
+    }
+
+    @AfterMethod
+    public void pageRefresh() {
+        try {
+            driver.navigate().refresh();
+            Thread.sleep(2000);
+        } catch (Exception e) {
+            System.err.println("Error refreshing page: " + e.getMessage());
+        }
+    }
+
+    @AfterSuite
+    public void afterSuite() {
+        if (driver != null) {
+            driver.quit();
+            System.out.println("✅ Browser closed. Test suite completed.");
+        }
+    }
 }
