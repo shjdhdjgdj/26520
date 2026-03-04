@@ -66,7 +66,24 @@ public class MainRunnerClass {
             System.out.println("✅ Chrome cleared.");
         } catch (Exception ignored) {}
 
-        // ── Step 3: Launch master on Default — load real session ─────────────────
+        // ── Step 3: Fix Chrome's crash flag so restore popup never appears ─────────
+        // Chrome shows "Restore pages?" when last session exit type was "Crashed"
+        // taskkill sets this flag — we reset it to "Normal" before launching
+        try {
+            Path localState = Paths.get(chromeUserDataDir, "Local State");
+            if (Files.exists(localState)) {
+                String state = new String(Files.readAllBytes(localState));
+                // Reset exit type from "Crashed" to "Normal"
+                state = state.replace("\"exit_type\":\"Crashed\"", "\"exit_type\":\"Normal\"");
+                state = state.replace("\"exit_type\":\"Abnormal\"", "\"exit_type\":\"Normal\"");
+                Files.write(localState, state.getBytes());
+                System.out.println("✅ Chrome crash flag reset — restore popup suppressed.");
+            }
+        } catch (Exception e) {
+            System.out.println("⚠ Could not reset crash flag: " + e.getMessage());
+        }
+
+        // ── Step 4: Launch master on Default — load real session ─────────────────
         System.out.println("🚀 Launching master Chrome (Default profile)...");
         WebDriver masterDriver = launchChrome(chromeUserDataDir, "Default");
         masterDriver.manage().timeouts().implicitlyWait(Duration.ofSeconds(10));
@@ -214,7 +231,10 @@ public class MainRunnerClass {
             "--metrics-recording-only",
             "--safebrowsing-disable-auto-update",
             "--password-store=basic",
-            "--use-mock-keychain"
+            "--use-mock-keychain",
+            "--restore-last-session=false",
+            "--disable-session-crashed-bubble",
+            "--hide-crash-restore-bubble"
         );
         WebDriver d = new ChromeDriver(opts);
         d.manage().window().maximize();
