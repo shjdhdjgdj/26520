@@ -8,6 +8,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Properties;
+import java.util.Set;
 import java.util.concurrent.ConcurrentLinkedQueue;
 
 import org.openqa.selenium.By;
@@ -47,51 +48,31 @@ public class MainRunnerClass {
     @BeforeSuite
     public void beforeSuite() throws Exception {
 
-        // ── Step 1: Auto-detect Chrome User Data path for this machine ────────────
-        chromeUserDataDir = detectChromeUserDataDir();
-        System.out.println("📁 Chrome profile path: " + chromeUserDataDir);
+        System.out.println("=================================================");
+        System.out.println("✅ PARALLEL VERSION 4 — cookie-inject approach");
+        System.out.println("   PARALLEL_COUNT = " + PARALLEL_COUNT);
+        System.out.println("=================================================");
 
+        // ── Step 1: Auto-detect Chrome User Data path ─────────────────────────────
+        chromeUserDataDir = detectChromeUserDataDir();
+        System.out.println("📁 Chrome profile: " + chromeUserDataDir);
         WebDriverManager.chromedriver().setup();
 
-        // ── Step 2: Kill any Chrome already using the Default profile ─────────────
-        // If Chrome is open with Default profile, Selenium cannot attach to same profile
-        System.out.println("🔍 Checking for existing Chrome processes...");
+        // ── Step 2: Kill Chrome so Default profile is not locked ─────────────────
+        System.out.println("🔍 Killing any existing Chrome processes...");
         try {
             Runtime.getRuntime().exec("taskkill /F /IM chrome.exe /T").waitFor();
-            Thread.sleep(2000); // give Chrome time to fully release profile lock
-            System.out.println("✅ Existing Chrome closed (or none was running).");
+            Thread.sleep(3000);
+            System.out.println("✅ Chrome cleared.");
         } catch (Exception ignored) {}
 
-        // ── Step 3: Make a temp copy of Default profile for master driver ─────────
-        // Never open Default directly — copy it so we never conflict with user's Chrome
-        String masterProfileName = PROFILE_PREFIX + "master";
-        Path sourceProfile = Paths.get(chromeUserDataDir, "Default");
-        Path masterProfilePath = Paths.get(chromeUserDataDir, masterProfileName);
-
-        System.out.println("📂 Preparing master profile copy...");
-        if (Files.exists(masterProfilePath)) deleteDirectory(masterProfilePath);
-        copyDirectory(sourceProfile, masterProfilePath);
-
-        // ── Step 4: Launch master Chrome using the COPY (not Default directly) ────
-        System.out.println("🚀 Launching master Chrome...");
-        ChromeOptions masterOpts = new ChromeOptions();
-        masterOpts.addArguments(
-            "--user-data-dir=" + chromeUserDataDir,
-            "--profile-directory=" + masterProfileName,
-            "--no-first-run",
-            "--no-default-browser-check",
-            "--disable-extensions",
-            "--disable-notifications",
-            "--disable-popup-blocking",
-            "--remote-debugging-port=0"  // avoid port conflicts
-        );
-        WebDriver masterDriver = new ChromeDriver(masterOpts);
-        masterDriver.manage().window().maximize();
+        // ── Step 3: Launch master on Default — load real session ─────────────────
+        System.out.println("🚀 Launching master Chrome (Default profile)...");
+        WebDriver masterDriver = launchChrome(chromeUserDataDir, "Default");
         masterDriver.manage().timeouts().implicitlyWait(Duration.ofSeconds(10));
 
-        // ── Step 5: Check if already logged in ───────────────────────────────────
         masterDriver.get(VARIABLES.NEW_REGISTRATION_URL);
-        Thread.sleep(3000);
+        Thread.sleep(4000);
 
         String landedUrl = masterDriver.getCurrentUrl();
         boolean needsLogin = landedUrl.contains("login")
@@ -99,42 +80,84 @@ public class MainRunnerClass {
                           || landedUrl.contains("signin");
 
         if (needsLogin) {
-            System.out.println("⏳ Session expired or first run — logging in...");
+            System.out.println("⏳ Logging in...");
             masterDriver.get(VARIABLES.SIGN_IN_PAGE_URL);
             new PageBean(masterDriver).login(VARIABLES.EMAIL, VARIABLES.PASSWORD, 1, 2);
-            System.out.println("✅ Login complete. Session saved to master profile copy.");
+            System.out.println("✅ Login complete.");
+            // Navigate to form to ensure session is fully established
+            masterDriver.get(VARIABLES.NEW_REGISTRATION_URL);
+            Thread.sleep(2000);
         } else {
-            System.out.println("✅ Already logged in — skipping login entirely.");
+            System.out.println("✅ Already logged in.");
         }
 
-        // ── Step 6: Quit master — flush session to disk, then copy to worker profiles
+        // ── Step 4: Harvest all session cookies from master ───────────────────────
+        System.out.println("🍪 Harvesting session cookies...");
+        Set<org.openqa.selenium.Cookie> sessionCookies = masterDriver.manage().getCookies();
+        String currentDomain = masterDriver.getCurrentUrl();
+        System.out.println("   Captured " + sessionCookies.size() + " cookies.");
+
         masterDriver.quit();
-        Thread.sleep(2000);
-        System.out.println("✅ Master Chrome closed. Session flushed to disk.");
+        Thread.sleep(1000);
+        System.out.println("✅ Master Chrome closed.");
 
-        // ── Step 7: Copy master profile → SeleniumProfile_1 ... _N ──────────────
-        // Use the master copy (which now has fresh session) as source
-        System.out.println("📂 Copying profile " + PARALLEL_COUNT + " times...");
-
-        for (int i = 1; i <= PARALLEL_COUNT; i++) {
-            String profileName = PROFILE_PREFIX + i;
-            Path   destProfile = Paths.get(chromeUserDataDir, profileName);
-
-            if (Files.exists(destProfile)) deleteDirectory(destProfile);
-            copyDirectory(masterProfilePath, destProfile);  // copy from master (has session)
-            copiedProfiles.add(destProfile);
-            System.out.println("  ✔ " + profileName);
-        }
-
-        // ── Step 6: Launch N independent Chrome instances — all pre-logged-in ─────
+        // ── Step 5: Launch N worker Chromes with FRESH temp profiles ─────────────
+        // Fresh profiles = no lock issues, no copy needed, starts instantly
+        // We inject the session cookies after launch
         System.out.println("🌐 Launching " + PARALLEL_COUNT + " Chrome instances...");
+
         for (int i = 1; i <= PARALLEL_COUNT; i++) {
-            WebDriver d = launchChrome(chromeUserDataDir, PROFILE_PREFIX + i);
+            // Each worker gets its own temp user-data-dir — completely independent
+            String tempDir = System.getProperty("java.io.tmpdir") + "\SeleniumWorker_" + i;
+            Path tempPath = Paths.get(tempDir);
+            if (Files.exists(tempPath)) deleteDirectory(tempPath);
+            Files.createDirectories(tempPath);
+            copiedProfiles.add(tempPath); // track for cleanup
+
+            ChromeOptions opts = new ChromeOptions();
+            opts.addArguments(
+                "--user-data-dir=" + tempDir,   // fresh isolated temp dir per worker
+                "--profile-directory=Default",
+                "--no-first-run",
+                "--no-default-browser-check",
+                "--disable-extensions",
+                "--disable-notifications",
+                "--disable-popup-blocking",
+                "--remote-debugging-port=0",
+                "--no-sandbox",
+                "--disable-gpu",
+                "--disable-dev-shm-usage"
+            );
+
+            WebDriver d = new ChromeDriver(opts);
+            d.manage().window().maximize();
             d.manage().timeouts().implicitlyWait(Duration.ofSeconds(10));
+
+            // Navigate to site domain first (cookies require matching domain)
+            d.get(VARIABLES.SIGN_IN_PAGE_URL);
+            Thread.sleep(2000);
+
+            // Inject all session cookies from master
+            for (org.openqa.selenium.Cookie cookie : sessionCookies) {
+                try {
+                    d.manage().addCookie(cookie);
+                } catch (Exception ignored) {} // skip if cookie domain doesn't match exactly
+            }
+
+            // Navigate to form — should be logged in now via injected cookies
             d.get(VARIABLES.NEW_REGISTRATION_URL);
+            Thread.sleep(3000);
+
+            String workerUrl = d.getCurrentUrl();
+            if (workerUrl.contains("login") || workerUrl.contains("sign_in")) {
+                System.out.println("  ⚠ Instance " + i + " — cookie injection failed, attempting login...");
+                new PageBean(d).login(VARIABLES.EMAIL, VARIABLES.PASSWORD, 1, 2);
+            } else {
+                System.out.println("  ✔ Instance " + i + " ready (logged in via cookies)");
+            }
+
             allDrivers.add(d);
             driverPool.add(d);
-            System.out.println("  ✔ Instance " + i + " ready");
         }
 
         System.out.println("\n✅ TRUE PARALLEL READY — "
@@ -189,7 +212,13 @@ public class MainRunnerClass {
             "--no-default-browser-check",
             "--disable-extensions",
             "--disable-notifications",
-            "--disable-popup-blocking"
+            "--disable-popup-blocking",
+            "--remote-debugging-port=0",     // avoid port conflicts between instances
+            "--no-sandbox",                  // required when launched from subprocess (Maven)
+            "--disable-gpu",                 // prevents crash in headless/subprocess context
+            "--disable-dev-shm-usage",       // prevents /dev/shm issues on constrained systems
+            "--disable-background-networking",
+            "--disable-software-rasterizer"
         );
         WebDriver d = new ChromeDriver(opts);
         d.manage().window().maximize();
