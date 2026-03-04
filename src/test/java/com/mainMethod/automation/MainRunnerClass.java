@@ -66,22 +66,41 @@ public class MainRunnerClass {
             System.out.println("✅ Chrome cleared.");
         } catch (Exception ignored) {}
 
-        // ── Step 3: Fix Chrome's crash flag so restore popup never appears ─────────
-        // Chrome shows "Restore pages?" when last session exit type was "Crashed"
-        // taskkill sets this flag — we reset it to "Normal" before launching
+        // ── Step 3: Clean up Chrome lock files + reset crash flag ──────────────────
+        // After taskkill, Chrome leaves lock files that cause immediate crash on next launch
+        System.out.println("🧹 Cleaning Chrome lock files...");
+        String[] lockFiles = {
+            chromeUserDataDir + File.separator + "Default" + File.separator + "lockfile",
+            chromeUserDataDir + File.separator + "Default" + File.separator + ".com.google.Chrome",
+            chromeUserDataDir + File.separator + "SingletonLock",
+            chromeUserDataDir + File.separator + "SingletonCookie",
+            chromeUserDataDir + File.separator + "SingletonSocket"
+        };
+        for (String lockFile : lockFiles) {
+            try {
+                java.nio.file.Path lp = Paths.get(lockFile);
+                if (Files.exists(lp)) {
+                    Files.delete(lp);
+                    System.out.println("  ✔ Deleted lock: " + lockFile);
+                }
+            } catch (Exception ignored) {}
+        }
+
+        // Reset exit_type so Chrome doesn't show "Restore pages?" popup
         try {
             Path localState = Paths.get(chromeUserDataDir, "Local State");
             if (Files.exists(localState)) {
                 String state = new String(Files.readAllBytes(localState));
-                // Reset exit type from "Crashed" to "Normal"
-                state = state.replace("\"exit_type\":\"Crashed\"", "\"exit_type\":\"Normal\"");
+                state = state.replace("\"exit_type\":\"Crashed\"",  "\"exit_type\":\"Normal\"");
                 state = state.replace("\"exit_type\":\"Abnormal\"", "\"exit_type\":\"Normal\"");
                 Files.write(localState, state.getBytes());
-                System.out.println("✅ Chrome crash flag reset — restore popup suppressed.");
+                System.out.println("✅ Chrome crash flag reset.");
             }
         } catch (Exception e) {
             System.out.println("⚠ Could not reset crash flag: " + e.getMessage());
         }
+
+        Thread.sleep(1000); // small pause after file cleanup
 
         // ── Step 4: Launch master on Default — load real session ─────────────────
         System.out.println("🚀 Launching master Chrome (Default profile)...");
