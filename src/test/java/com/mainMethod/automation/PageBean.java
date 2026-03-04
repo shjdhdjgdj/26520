@@ -2,12 +2,12 @@ package com.mainMethod.automation;
 
 import java.io.File;
 import java.nio.file.Paths;
-import java.time.Duration;
 
 import com.microsoft.playwright.Dialog;
 import com.microsoft.playwright.Locator;
 import com.microsoft.playwright.Page;
 import com.microsoft.playwright.PlaywrightException;
+import com.microsoft.playwright.options.LoadState;          // ✅ FIXED: was missing
 import com.microsoft.playwright.options.SelectOption;
 
 import config.VARIABLES;
@@ -24,8 +24,7 @@ public class PageBean {
 
     private void clearAndType(String selector, String value) {
         Locator el = page.locator(selector);
-        el.waitFor(new Page.WaitForOptions().setTimeout(Duration.ofSeconds(5)));
-        // Check if editable
+        el.waitFor(new Locator.WaitForOptions().setTimeout(5000));   // ✅ FIXED: Locator.WaitForOptions, double ms
         if (isEditable(el)) {
             el.click();
             el.selectText();
@@ -44,7 +43,7 @@ public class PageBean {
 
     private void waitForOptions(String selector) {
         page.waitForFunction("sel => document.querySelector(sel).options.length > 1", selector,
-            new Page.WaitForFunctionOptions().setTimeout(Duration.ofSeconds(10)));
+            new Page.WaitForFunctionOptions().setTimeout(10000));   // ✅ FIXED: double ms
     }
 
     private void selectByText(String selector, String text) {
@@ -72,7 +71,7 @@ public class PageBean {
                 return f.getAbsolutePath();
             }
         }
-        System.out.println("⚠ File not found: " + basePath + File.separator + name);  // Fixed: Better log, no exception
+        System.out.println("⚠ File not found: " + basePath + File.separator + name);
         return null;
     }
 
@@ -86,22 +85,22 @@ public class PageBean {
         waitForOptions("#user_session");
         page.selectOption("#user_session", new SelectOption().setIndex(sessionIndex));
 
-        page.waitForTimeout(Duration.ofSeconds(2));  // Fixed: Shorter, non-blocking
+        page.waitForTimeout(2000);   // ✅ FIXED: double ms throughout
         page.locator("#generate_otp").click();
-        page.waitForTimeout(Duration.ofSeconds(30));  // Fixed: Still long for manual OTP, but use selector if possible: page.waitForSelector("#otp-input")
+        page.waitForTimeout(30000);  // 30s for manual OTP entry
 
         Locator cb = page.locator("//input[@type='checkbox']").first();
         if (!cb.isChecked()) cb.check();
 
         page.locator("//button[@class='btn btn-group btn-default btn-animated btn_login']").click();
-        page.waitForLoadState(LoadState.DOMCONTENTLOADED);  // Fixed: Faster
+        page.waitForLoadState(LoadState.DOMCONTENTLOADED);
         System.out.println("[DEBUG] Login completed.");
     }
 
     /*─────────────────────── Search ────────────────────────────────────────────*/
 
     public void searchPerson(String voterCard) {
-        page.waitForSelector("#insure_voter_id", new Page.WaitForSelectorOptions().setTimeout(Duration.ofSeconds(10)));
+        page.waitForSelector("#insure_voter_id", new Page.WaitForSelectorOptions().setTimeout(10000));
         Locator checkbox = page.locator("//input[@type='checkbox']").first();
         if (checkbox.isVisible() && checkbox.isChecked()) {
             checkbox.uncheck();
@@ -112,21 +111,20 @@ public class PageBean {
         page.locator("#insur_search").click();
         System.out.println("[DEBUG] Search clicked for: " + voterCard);
 
-        // Fixed: Retry logic for flaky results
         int retries = 2;
         while (retries > 0) {
             try {
-                page.waitForSelector("//tbody[@id='tbodycrop']/tr", new Page.WaitForSelectorOptions().setTimeout(Duration.ofSeconds(20)));
+                page.waitForSelector("//tbody[@id='tbodycrop']/tr", new Page.WaitForSelectorOptions().setTimeout(20000));
                 System.out.println("[DEBUG] Search results loaded.");
                 break;
             } catch (PlaywrightException e) {
-                System.out.println("[DEBUG] No crop rows after " + (3 - retries + 1) + " attempt(s): " + e.getMessage());
+                System.out.println("[DEBUG] No crop rows after attempt: " + e.getMessage());
                 if (retries == 1) {
                     System.out.println("[DEBUG] No crop rows found, maybe no data.");
                 } else {
-                    page.locator("#insur_search").click();  // Retry search
-                    retries--;
+                    page.locator("#insur_search").click();
                 }
+                retries--;
             }
         }
     }
@@ -149,14 +147,15 @@ public class PageBean {
         return false;
     }
 
-    /*─────────────────────── Check if Aadhar is pre-filled (farmer exists) ─────*/
+    /*─────────────────────── Aadhar pre-filled check ───────────────────────────*/
+
     public boolean isAadharPrefilled() {
         Locator aadhar = page.locator("#insure_aadhar_no");
         String value = aadhar.inputValue();
         return value != null && !value.trim().isEmpty();
     }
 
-    /*─────────────────────── Aadhar / App Source ───────────────────────────────*/
+    /*─────────────────────── Aadhar Entry ──────────────────────────────────────*/
 
     public void dataEntry(String aadharCard) {
         Locator aadhar = page.locator("#insure_aadhar_no");
@@ -183,17 +182,8 @@ public class PageBean {
         }
     }
 
-    private void selectByValueIfEnabled(String selector, String value) {
-        Locator loc = page.locator(selector);
-        if (loc.isEnabled()) {
-            selectByValue(selector, value);
-        } else {
-            System.out.println("[DEBUG] " + selector + " is disabled, skipping.");
-        }
-    }
+    /*─────────────────────── Farmer Details ────────────────────────────────────*/
 
-    /*─────────────────────── Farmer Details (Added missing method) ──────────────*/
-    // Note: This was referenced but truncated in original—assuming standard fills based on Selenium equiv.
     public void farmerDetails(String name, String fatherName, String relation, String age, String gender,
                               String caste, String mobile, String category, String epicImg, String aadharNo) {
         fillIfEditable("#insure_name", name);
@@ -205,7 +195,6 @@ public class PageBean {
         fillIfEditable("#insure_mobile_no", mobile);
         selectByText("#insure_f_category", category);
 
-        // Uploads
         String epicFile = findFile(VARIABLES.VOTER_FILE_PATH, epicImg);
         if (epicFile != null) {
             page.locator("#insure_id_proof").setInputFiles(Paths.get(epicFile));
@@ -221,8 +210,7 @@ public class PageBean {
     /*─────────────────────── Residential Address ───────────────────────────────*/
 
     public void farmerResidentialAddress(String district, String block,
-                                         String gramPanchayat, String village,
-                                         String pin) {
+                                         String gramPanchayat, String village, String pin) {
         selectByText("#f_district", district);
         selectByText("#block_id",   block);
         selectByText("#gp_id",      gramPanchayat);
@@ -243,14 +231,10 @@ public class PageBean {
         selectByText("#insurance_farmer_insurance_applications_attributes_0_crop_id",     crop);
 
         String gpInitialSel = "#insurance_farmer_insurance_applications_attributes_0_gram_panchayat_id";
-        if (page.locator(gpInitialSel).isEnabled()) {
-            selectByText(gpInitialSel, gpInitial);
-        }
+        if (page.locator(gpInitialSel).isEnabled()) selectByText(gpInitialSel, gpInitial);
 
         String gpFinalSel = "#insurance_farmer_insurance_applications_attributes_0_insurance_lands_attributes_0_gram_panchayat_id";
-        if (page.locator(gpFinalSel).isEnabled()) {
-            selectByText(gpFinalSel, gpInitial);
-        }
+        if (page.locator(gpFinalSel).isEnabled()) selectByText(gpFinalSel, gpInitial);
 
         selectByText("#insurance_farmer_insurance_applications_attributes_0_insurance_lands_attributes_0_mouza_id", mouza);
 
@@ -258,19 +242,17 @@ public class PageBean {
         String plotSel    = "#insurance_farmer_insurance_applications_attributes_0_insurance_lands_attributes_0_plot_no";
         clearAndType(khatianSel, khatianNumber);
         clearAndType(plotSel,    plotNumber);
-        page.waitForTimeout(Duration.ofMillis(500));  // Fixed: Shorter
+        page.waitForTimeout(500);   // ✅ FIXED: double ms
         clearAndType(khatianSel, khatianNumber);
         clearAndType(plotSel,    plotNumber);
 
         String areaSel = "#insurance_farmer_insurance_applications_attributes_0_insurance_lands_attributes_0_inc_land_in_acer";
-        double area = Double.parseDouble(areaInAcre1);
 
-        // Register persistent dialog handler
         page.onDialog(Dialog::accept);
         System.out.println("[DEBUG] Dialog handler registered.");
 
         fillIfEditable(areaSel, areaInAcre1);
-        page.waitForTimeout(Duration.ofMillis(500));  // Fixed: Light pause for validation
+        page.waitForTimeout(500);
 
         String natureSel = "#insurance_farmer_insurance_applications_attributes_0_insurance_lands_attributes_0_nature_of_farmer";
         page.locator(natureSel).click();
@@ -294,8 +276,7 @@ public class PageBean {
     /*─────────────────────── Bank Details ──────────────────────────────────────*/
 
     public void bankDetailsEntry(String name, String accountNumber,
-                                  String accountType, String ifscCode)
-            throws InterruptedException {
+                                  String accountType, String ifscCode) throws InterruptedException {
 
         fillIfEditable("#insurance_farmer_insurance_applications_attributes_0_account_holder_name", name);
         fillIfEditable("#insurance_farmer_insurance_applications_attributes_0_account_number", accountNumber);
@@ -312,7 +293,7 @@ public class PageBean {
         Locator bank = page.locator("#insurance_farmer_insurance_applications_attributes_0_bank_name");
         if (bank.isEnabled()) {
             bank.click();
-            page.waitForTimeout(Duration.ofMillis(500));  // Fixed: Shorter
+            page.waitForTimeout(500);
             System.out.println("[DEBUG] Bank name clicked.");
         }
 
@@ -330,7 +311,7 @@ public class PageBean {
 
     public void submitForm() {
         page.locator("#before_insure_submit").click();
-        page.waitForLoadState(LoadState.DOMCONTENTLOADED);  // Fixed: Faster
+        page.waitForLoadState(LoadState.DOMCONTENTLOADED);
         System.out.println("[DEBUG] Form submitted.");
     }
 }
