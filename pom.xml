@@ -6,7 +6,7 @@
 <properties>
 <maven.compiler.source>11</maven.compiler.source>
 <maven.compiler.target>11</maven.compiler.target>
-<playwright.version>1.44.0</playwright.version>
+<playwright.version>1.49.0</playwright.version>
 </properties>
 <dependencies>
 <!--  Playwright — replaces Selenium + WebDriverManager entirely  -->
