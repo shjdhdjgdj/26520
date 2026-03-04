@@ -114,23 +114,8 @@ public class MainRunnerClass {
             Files.createDirectories(tempPath);
             copiedProfiles.add(tempPath); // track for cleanup
 
-            ChromeOptions opts = new ChromeOptions();
-            opts.addArguments(
-                "--user-data-dir=" + tempDir,   // fresh isolated temp dir per worker
-                "--profile-directory=Default",
-                "--no-first-run",
-                "--no-default-browser-check",
-                "--disable-extensions",
-                "--disable-notifications",
-                "--disable-popup-blocking",
-                "--remote-debugging-port=0",
-                "--no-sandbox",
-                "--disable-gpu",
-                "--disable-dev-shm-usage"
-            );
-
-            WebDriver d = new ChromeDriver(opts);
-            d.manage().window().maximize();
+            // Use launchChrome() — gets unique port + all stability flags
+            WebDriver d = launchChrome(tempDir, "Default");
             d.manage().timeouts().implicitlyWait(Duration.ofSeconds(10));
 
             // Navigate to site domain first (cookies require matching domain)
@@ -203,22 +188,33 @@ public class MainRunnerClass {
     }
 
     // ─────────────────────────────────────────────────────────────────────────────
+    // Each Chrome gets a unique port — port=0 is unreliable on Windows under Maven
+    private static final java.util.concurrent.atomic.AtomicInteger portCounter
+        = new java.util.concurrent.atomic.AtomicInteger(9222);
+
     private WebDriver launchChrome(String userDataDir, String profileDir) {
+        int port = portCounter.getAndIncrement(); // 9222, 9223, 9224 ...
         ChromeOptions opts = new ChromeOptions();
         opts.addArguments(
             "--user-data-dir=" + userDataDir,
             "--profile-directory=" + profileDir,
+            "--remote-debugging-port=" + port,   // explicit unique port — not 0
             "--no-first-run",
             "--no-default-browser-check",
             "--disable-extensions",
             "--disable-notifications",
             "--disable-popup-blocking",
-            "--remote-debugging-port=0",     // avoid port conflicts between instances
-            "--no-sandbox",                  // required when launched from subprocess (Maven)
-            "--disable-gpu",                 // prevents crash in headless/subprocess context
-            "--disable-dev-shm-usage",       // prevents /dev/shm issues on constrained systems
+            "--no-sandbox",
+            "--disable-gpu",
+            "--disable-dev-shm-usage",
             "--disable-background-networking",
-            "--disable-software-rasterizer"
+            "--disable-software-rasterizer",
+            "--disable-hang-monitor",
+            "--disable-prompt-on-repost",
+            "--metrics-recording-only",
+            "--safebrowsing-disable-auto-update",
+            "--password-store=basic",
+            "--use-mock-keychain"
         );
         WebDriver d = new ChromeDriver(opts);
         d.manage().window().maximize();
