@@ -30,18 +30,18 @@ public class MainRunnerClass {
     // ── Tune only this ────────────────────────────────────────────────────────────
     private static final int PARALLEL_COUNT = 4;
 
-    // ── Shared Playwright + Browser (one process, no profile issues) ──────────────
+    // ── Shared Playwright + Browser ───────────────────────────────────────────────
     private static Playwright playwright;
     private static Browser     browser;
 
-    // ── Session state file — login once, reuse across all contexts ───────────────
+    // ── Session state file ────────────────────────────────────────────────────────
     private static final String SESSION_FILE = "session.json";
 
-    // ── Context pool — each thread gets its own BrowserContext (= isolated tab) ──
+    // ── Context pool ──────────────────────────────────────────────────────────────
     private static final List<BrowserContext>                  allContexts  = Collections.synchronizedList(new ArrayList<>());
     private static final ConcurrentLinkedQueue<BrowserContext> contextPool  = new ConcurrentLinkedQueue<>();
 
-    // ── ThreadLocal — each thread exclusively owns one context + page ─────────────
+    // ── ThreadLocal ───────────────────────────────────────────────────────────────
     private static final ThreadLocal<BrowserContext> tlContext = new ThreadLocal<>();
     private static final ThreadLocal<Page>           tlPage    = new ThreadLocal<>();
     private static final ThreadLocal<PageBean>       tlPom     = new ThreadLocal<>();
@@ -64,8 +64,8 @@ public class MainRunnerClass {
         // ── Step 1: Start Playwright + launch ONE browser ─────────────────────────
         playwright = Playwright.create();
         BrowserType.LaunchOptions opts = new BrowserType.LaunchOptions()
-            .setHeadless(false)   // visible browser for OTP entry
-            .setSlowMo(0);
+            .setHeadless(false)
+            .setSlowMo(300); // Slow down for visibility (optional)
 
         String browser_name = prop.getProperty("browser", "chrome").toLowerCase();
         if (browser_name.equals("firefox")) {
@@ -76,22 +76,19 @@ public class MainRunnerClass {
 
         System.out.println("✅ Browser launched.");
 
-        // ── Step 2: Login ONCE in a master context ────────────────────────────────
+        // ── Step 2: Login ONCE ────────────────────────────────────────────────────
         System.out.println("🚀 Opening login window...");
         BrowserContext masterContext = browser.newContext();
         Page masterPage = masterContext.newPage();
-
         masterPage.navigate(VARIABLES.SIGN_IN_PAGE_URL);
         masterPage.waitForLoadState();
 
-        // Check if already have a saved session
         boolean sessionLoaded = false;
         if (new java.io.File(SESSION_FILE).exists()) {
             System.out.println("🍪 Found saved session — trying to reuse...");
             masterContext.close();
             masterContext = browser.newContext(
-                new Browser.NewContextOptions()
-                    .setStorageStatePath(Paths.get(SESSION_FILE))
+                new Browser.NewContextOptions().setStorageStatePath(Paths.get(SESSION_FILE))
             );
             masterPage = masterContext.newPage();
             masterPage.navigate(VARIABLES.NEW_REGISTRATION_URL);
@@ -118,48 +115,34 @@ public class MainRunnerClass {
             System.out.println("✅ Login complete.");
         }
 
-        // ── Step 3: Save session state to disk ───────────────────────────────────
-        // This captures all cookies + localStorage so workers can reuse it
-        masterContext.storageState(
-            new BrowserContext.StorageStateOptions()
-                .setPath(Paths.get(SESSION_FILE))
-        );
+        // Save session
+        masterContext.storageState(new BrowserContext.StorageStateOptions().setPath(Paths.get(SESSION_FILE)));
         masterContext.close();
         System.out.println("💾 Session saved to " + SESSION_FILE);
 
-        // ── Step 4: Create N BrowserContexts — all pre-logged-in via session ──────
-        // Each context is fully isolated (own cookies, storage, no shared state)
-        // but runs inside the SAME browser process — no profile issues whatsoever
+        // ── Step 4: Create N parallel contexts ────────────────────────────────────
         System.out.println("🌐 Creating " + PARALLEL_COUNT + " parallel contexts...");
-
         for (int i = 1; i <= PARALLEL_COUNT; i++) {
             BrowserContext ctx = browser.newContext(
-                new Browser.NewContextOptions()
-                    .setStorageStatePath(Paths.get(SESSION_FILE)) // inject saved session
+                new Browser.NewContextOptions().setStorageStatePath(Paths.get(SESSION_FILE))
             );
             Page page = ctx.newPage();
             page.navigate(VARIABLES.NEW_REGISTRATION_URL);
             page.waitForLoadState();
 
-            String url = page.url();
-            if (url.contains("login") || url.contains("sign_in")) {
-                System.out.println("  ⚠ Context " + i + " — session not accepted, check session.json");
-            } else {
+            // Wait for form header to ensure page is ready
+            try {
+                page.waitForSelector("//h4[contains(text(),'SBI GENERAL INSURANCE COMPANY LIMITED')]",
+                    new Page.WaitForSelectorOptions().setTimeout(15000));
                 System.out.println("  ✔ Context " + i + " ready (logged in)");
+            } catch (Exception e) {
+                System.out.println("  ⚠ Context " + i + " — form not detected, check session");
             }
 
-            // Store page inside context so we can retrieve it later
-            ctx.addInitScript("");  // no-op, just to keep context active
-            // We store the page reference via a naming trick using the pool
             allContexts.add(ctx);
             contextPool.add(ctx);
-
-            // Keep page accessible — store in context's pages list
-            // (page already attached to ctx, retrievable via ctx.pages().get(0))
         }
-
-        System.out.println("\n✅ READY — " + PARALLEL_COUNT
-            + " isolated contexts running in parallel.\n");
+        System.out.println("\n✅ READY — " + PARALLEL_COUNT + " isolated contexts running in parallel.\n");
     }
 
     // ─────────────────────────────────────────────────────────────────────────────
@@ -182,8 +165,13 @@ public class MainRunnerClass {
         BrowserContext ctx = tlContext.get();
         Page page = tlPage.get();
         if (ctx != null && page != null) {
-            try { page.navigate(VARIABLES.NEW_REGISTRATION_URL); }
-            catch (Exception ignored) {}
+            try {
+                page.navigate(VARIABLES.NEW_REGISTRATION_URL);
+                page.waitForSelector("//h4[contains(text(),'SBI GENERAL INSURANCE COMPANY LIMITED')]",
+                    new Page.WaitForSelectorOptions().setTimeout(10000));
+            } catch (Exception ignored) {
+                System.err.println("[Thread-" + Thread.currentThread().getId() + "] Warning: could not reset page");
+            }
             contextPool.add(ctx);
             tlContext.remove();
             tlPage.remove();
@@ -195,94 +183,116 @@ public class MainRunnerClass {
     // ─────────────────────────────────────────────────────────────────────────────
     @DataProvider(name = "excelData", parallel = true)
     public Object[][] testMainMethod() {
+        // Assumes ExcelUtility.getExcelData() returns Object[][] with row index at position 0
         return ExcelUtility.getExcelData();
     }
 
     // ─────────────────────────────────────────────────────────────────────────────
     @Test(dataProvider = "excelData")
     public void runTests(Object[] data) throws InterruptedException {
+        int rowIndex = (int) data[0]; // row index from ExcelUtility
+        String status = "PASS";
 
-        String FarmrName    = (String) data[2];
-        String FathrHusName = (String) data[3];
-        String EpicID       = (String) data[4];
-        String AadharNo     = (String) data[5];
-        String Age          = (String) data[7];
-        String Gender       = (String) data[8];
-        String Caste        = (String) data[9];
-        String MobNo        = (String) data[10];
-        String Crop         = (String) data[11];
-        String District     = (String) data[12];
-        String Block        = (String) data[13];
-        String GP           = (String) data[14];
-        String Mouza1       = (String) data[15];
-        String KhatianNo1   = (String) data[17];
-        String PlotNo1      = (String) data[18];
-        String AreaInsur1   = (String) data[19];
-        String FarmrCat     = (String) data[20];
-        String NatureFarmr1 = (String) data[21];
-        String IFSCode      = (String) data[22];
-        String AccNo        = (String) data[23];
-        String Vill         = (String) data[24];
-        String Pin          = (String) data[25];
-        String AccType      = (String) data[26];
-        String Relation     = (String) data[27];
-        String EpicIDImg    = (String) data[29];
-        String ParchaImg    = (String) data[30];
+        // Extract fields (indices shift because data[0] is row index)
+        String FarmrName    = (String) data[3];
+        String FathrHusName = (String) data[4];
+        String EpicID       = (String) data[5];
+        String AadharNo     = (String) data[6];
+        String Age          = (String) data[8];
+        String Gender       = (String) data[9];
+        String Caste        = (String) data[10];
+        String MobNo        = (String) data[11];
+        String Crop         = (String) data[12];
+        String District     = (String) data[13];
+        String Block        = (String) data[14];
+        String GP           = (String) data[15];
+        String Mouza1       = (String) data[16];
+        String KhatianNo1   = (String) data[18];
+        String PlotNo1      = (String) data[19];
+        String AreaInsur1   = (String) data[20];
+        String FarmrCat     = (String) data[21];
+        String NatureFarmr1 = (String) data[22];
+        String IFSCode      = (String) data[23];
+        String AccNo        = (String) data[24];
+        String Vill         = (String) data[25];
+        String Pin          = (String) data[26];
+        String AccType      = (String) data[27];
+        String Relation     = (String) data[28];
+        String EpicIDImg    = (String) data[30];
+        String ParchaImg    = (String) data[31];
 
         Page     page = tlPage.get();
         PageBean pom  = tlPom.get();
 
-        System.out.println("[Thread-" + Thread.currentThread().getId()
-            + "] Processing: " + EpicID);
+        System.out.println("[Thread-" + Thread.currentThread().getId() + "] ▶ Processing Row " + rowIndex + " - Epic ID: " + EpicID);
 
-        // Ensure form page is loaded
-        checkFormPage(page);
+        try {
+            // Ensure we are on the form page
+            checkFormPage(page);
 
-        pom.searchPerson(EpicID);
+            // Search
+            pom.searchPerson(EpicID);
 
-        if (pom.logicToSkip(Crop, GP)) {
-            throw new SkipException("Already exists. Skipping: " + EpicID);
+            // Check if record exists
+            if (pom.logicToSkip(Crop, GP)) {
+                status = "SKIP";
+                System.out.println("⏭️ Row " + rowIndex + " skipped - already exists");
+                throw new SkipException("Already exists. Skipping: " + EpicID);
+            }
+
+            // Fill data
+            pom.dataEntry(AadharNo);
+            pom.farmerDetails(FarmrName, FathrHusName, Relation, Age, Gender,
+                              Caste, MobNo, FarmrCat, EpicIDImg, AadharNo);
+            pom.farmerResidentialAddress(District, Block, GP, Vill, Pin);
+            pom.cropDetailsEntry(District, Block, Crop, GP, Mouza1, KhatianNo1,
+                                 PlotNo1, AreaInsur1, NatureFarmr1, ParchaImg);
+            pom.bankDetailsEntry(FarmrName, AccNo, AccType, IFSCode);
+            pom.submitForm();
+
+            System.out.println("✅ Row " + rowIndex + " completed successfully");
+        } catch (SkipException e) {
+            status = "SKIP";
+            throw e;
+        } catch (Exception e) {
+            status = "FAIL";
+            System.err.println("❌ Row " + rowIndex + " failed: " + e.getMessage());
+            e.printStackTrace();
+            throw e;
+        } finally {
+            // Update Excel with test status (adjust method name if different)
+            ExcelUtility.updateTestStatus(rowIndex, status);
+            System.out.println("📊 Excel updated: Row " + rowIndex + " = " + status);
+            System.out.println("----------------------------------------");
         }
-
-        pom.dataEntry(AadharNo);
-        pom.farmerDetails(FarmrName, FathrHusName, Relation, Age, Gender,
-                          Caste, MobNo, FarmrCat, EpicIDImg, AadharNo);
-        pom.farmerResidentialAddress(District, Block, GP, Vill, Pin);
-        pom.cropDetailsEntry(District, Block, Crop, GP, Mouza1, KhatianNo1,
-                             PlotNo1, AreaInsur1, NatureFarmr1, ParchaImg);
-        pom.bankDetailsEntry(FarmrName, AccNo, AccType, IFSCode);
-        pom.submitForm();
     }
 
-    // ─────────────────────────────────────────────────────────────────────────────
     private void checkFormPage(Page page) {
         String url = page.url();
-        if (url.contains("login") || url.contains("sign_in") || !url.contains(
-                VARIABLES.NEW_REGISTRATION_URL.split("/")[2])) {
+        if (url.contains("login") || url.contains("sign_in") || !url.contains(VARIABLES.NEW_REGISTRATION_URL.split("/")[2])) {
             page.navigate(VARIABLES.NEW_REGISTRATION_URL);
             page.waitForLoadState();
         }
-        // Wait for the form header
         try {
-            page.waitForSelector(
-                "//h4[contains(text(),'SBI GENERAL INSURANCE COMPANY LIMITED')]",
-                new Page.WaitForSelectorOptions().setTimeout(15000)
-            );
+            page.waitForSelector("//h4[contains(text(),'SBI GENERAL INSURANCE COMPANY LIMITED')]",
+                new Page.WaitForSelectorOptions().setTimeout(15000));
         } catch (Exception e) {
+            System.out.println("⚠ Form header not found, reloading...");
             page.reload();
             page.waitForLoadState();
+            page.waitForSelector("//h4[contains(text(),'SBI GENERAL INSURANCE COMPANY LIMITED')]",
+                new Page.WaitForSelectorOptions().setTimeout(15000));
         }
     }
 
-    // ─────────────────────────────────────────────────────────────────────────────
     @AfterSuite
     public void afterSuite() {
         System.out.println("🔴 Closing all contexts...");
         for (BrowserContext ctx : allContexts) {
             try { ctx.close(); } catch (Exception ignored) {}
         }
-        if (browser   != null) try { browser.close();     } catch (Exception ignored) {}
-        if (playwright != null) try { playwright.close();  } catch (Exception ignored) {}
+        if (browser != null) try { browser.close(); } catch (Exception ignored) {}
+        if (playwright != null) try { playwright.close(); } catch (Exception ignored) {}
         System.out.println("✅ Done.");
     }
 }
