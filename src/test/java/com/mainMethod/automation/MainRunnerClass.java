@@ -13,6 +13,7 @@ import com.microsoft.playwright.BrowserContext;
 import com.microsoft.playwright.BrowserType;
 import com.microsoft.playwright.Page;
 import com.microsoft.playwright.Playwright;
+import com.microsoft.playwright.PlaywrightException; // <-- Import for exception
 
 import org.testng.SkipException;
 import org.testng.annotations.AfterMethod;
@@ -27,21 +28,15 @@ import config.VARIABLES;
 
 public class MainRunnerClass {
 
-    // ── Tune only this ────────────────────────────────────────────────────────────
     private static final int PARALLEL_COUNT = 4;
 
-    // ── Shared Playwright + Browser ───────────────────────────────────────────────
     private static Playwright playwright;
     private static Browser     browser;
-
-    // ── Session state file ────────────────────────────────────────────────────────
     private static final String SESSION_FILE = "session.json";
 
-    // ── Context pool ──────────────────────────────────────────────────────────────
     private static final List<BrowserContext>                  allContexts  = Collections.synchronizedList(new ArrayList<>());
     private static final ConcurrentLinkedQueue<BrowserContext> contextPool  = new ConcurrentLinkedQueue<>();
 
-    // ── ThreadLocal ───────────────────────────────────────────────────────────────
     private static final ThreadLocal<BrowserContext> tlContext = new ThreadLocal<>();
     private static final ThreadLocal<Page>           tlPage    = new ThreadLocal<>();
     private static final ThreadLocal<PageBean>       tlPom     = new ThreadLocal<>();
@@ -49,23 +44,21 @@ public class MainRunnerClass {
     // ─────────────────────────────────────────────────────────────────────────────
     @BeforeSuite
     public void beforeSuite() throws Exception {
-
+        // ... (unchanged, same as previous corrected version) ...
         System.out.println("=================================================");
         System.out.println("✅ PLAYWRIGHT PARALLEL — BrowserContext approach");
         System.out.println("   PARALLEL_COUNT = " + PARALLEL_COUNT);
         System.out.println("=================================================");
 
-        // Load config
         Properties prop = new Properties();
         try (FileInputStream fis = new FileInputStream("config.properties")) {
             prop.load(fis);
         }
 
-        // ── Step 1: Start Playwright + launch ONE browser ─────────────────────────
         playwright = Playwright.create();
         BrowserType.LaunchOptions opts = new BrowserType.LaunchOptions()
             .setHeadless(false)
-            .setSlowMo(300); // Slow down for visibility (optional)
+            .setSlowMo(300);
 
         String browser_name = prop.getProperty("browser", "chrome").toLowerCase();
         if (browser_name.equals("firefox")) {
@@ -73,10 +66,9 @@ public class MainRunnerClass {
         } else {
             browser = playwright.chromium().launch(opts);
         }
-
         System.out.println("✅ Browser launched.");
 
-        // ── Step 2: Login ONCE ────────────────────────────────────────────────────
+        // Login once
         System.out.println("🚀 Opening login window...");
         BrowserContext masterContext = browser.newContext();
         Page masterPage = masterContext.newPage();
@@ -115,12 +107,10 @@ public class MainRunnerClass {
             System.out.println("✅ Login complete.");
         }
 
-        // Save session
         masterContext.storageState(new BrowserContext.StorageStateOptions().setPath(Paths.get(SESSION_FILE)));
         masterContext.close();
         System.out.println("💾 Session saved to " + SESSION_FILE);
 
-        // ── Step 4: Create N parallel contexts ────────────────────────────────────
         System.out.println("🌐 Creating " + PARALLEL_COUNT + " parallel contexts...");
         for (int i = 1; i <= PARALLEL_COUNT; i++) {
             BrowserContext ctx = browser.newContext(
@@ -130,7 +120,6 @@ public class MainRunnerClass {
             page.navigate(VARIABLES.NEW_REGISTRATION_URL);
             page.waitForLoadState();
 
-            // Wait for form header to ensure page is ready
             try {
                 page.waitForSelector("//h4[contains(text(),'SBI GENERAL INSURANCE COMPANY LIMITED')]",
                     new Page.WaitForSelectorOptions().setTimeout(15000));
@@ -153,26 +142,69 @@ public class MainRunnerClass {
             ctx = contextPool.poll();
             if (ctx == null) Thread.sleep(300);
         }
-        Page page = ctx.pages().isEmpty() ? ctx.newPage() : ctx.pages().get(0);
+
+        Page page;
+        if (ctx.pages().isEmpty()) {
+            page = ctx.newPage();
+        } else {
+            page = ctx.pages().get(0);
+            // Verify the page is still valid by checking its URL
+            try {
+                page.url(); // This will throw if page is detached
+            } catch (PlaywrightException e) {
+                System.out.println("[Thread-" + Thread.currentThread().getId() + "] Page detached, creating new page in context.");
+                page = ctx.newPage();
+            }
+        }
+
         tlContext.set(ctx);
         tlPage.set(page);
         tlPom.set(new PageBean(page));
         System.out.println("[Thread-" + Thread.currentThread().getId() + "] ▶ acquired context");
     }
 
+    // ─────────────────────────────────────────────────────────────────────────────
     @AfterMethod
     public void releaseContext() {
         BrowserContext ctx = tlContext.get();
         Page page = tlPage.get();
+        boolean contextValid = true;
+
         if (ctx != null && page != null) {
             try {
                 page.navigate(VARIABLES.NEW_REGISTRATION_URL);
                 page.waitForSelector("//h4[contains(text(),'SBI GENERAL INSURANCE COMPANY LIMITED')]",
                     new Page.WaitForSelectorOptions().setTimeout(10000));
-            } catch (Exception ignored) {
-                System.err.println("[Thread-" + Thread.currentThread().getId() + "] Warning: could not reset page");
+            } catch (Exception e) {
+                System.err.println("[Thread-" + Thread.currentThread().getId() + "] Warning: could not reset page, context may be invalid.");
+                contextValid = false;
             }
-            contextPool.add(ctx);
+
+            if (!contextValid) {
+                // Close the broken context
+                try { ctx.close(); } catch (Exception ignored) {}
+                // Remove it from the global list (safe because allContexts is synchronized)
+                allContexts.remove(ctx);
+
+                // Create a brand new context to replace it
+                try {
+                    BrowserContext newCtx = browser.newContext(
+                        new Browser.NewContextOptions().setStorageStatePath(Paths.get(SESSION_FILE))
+                    );
+                    Page newPage = newCtx.newPage();
+                    newPage.navigate(VARIABLES.NEW_REGISTRATION_URL);
+                    newPage.waitForSelector("//h4[contains(text(),'SBI GENERAL INSURANCE COMPANY LIMITED')]",
+                        new Page.WaitForSelectorOptions().setTimeout(15000));
+                    allContexts.add(newCtx);
+                    contextPool.add(newCtx);
+                    System.out.println("[Thread-" + Thread.currentThread().getId() + "] Replaced invalid context with fresh one.");
+                } catch (Exception ex) {
+                    System.err.println("[Thread-" + Thread.currentThread().getId() + "] Failed to create replacement context.");
+                }
+            } else {
+                contextPool.add(ctx);
+            }
+
             tlContext.remove();
             tlPage.remove();
             tlPom.remove();
@@ -183,17 +215,15 @@ public class MainRunnerClass {
     // ─────────────────────────────────────────────────────────────────────────────
     @DataProvider(name = "excelData", parallel = true)
     public Object[][] testMainMethod() {
-        // Assumes ExcelUtility.getExcelData() returns Object[][] with row index at position 0
         return ExcelUtility.getExcelData();
     }
 
     // ─────────────────────────────────────────────────────────────────────────────
     @Test(dataProvider = "excelData")
     public void runTests(Object[] data) throws InterruptedException {
-        int rowIndex = (int) data[0]; // row index from ExcelUtility
+        int rowIndex = (int) data[0];
         String status = "PASS";
 
-        // Extract fields (indices shift because data[0] is row index)
         String FarmrName    = (String) data[3];
         String FathrHusName = (String) data[4];
         String EpicID       = (String) data[5];
@@ -227,20 +257,16 @@ public class MainRunnerClass {
         System.out.println("[Thread-" + Thread.currentThread().getId() + "] ▶ Processing Row " + rowIndex + " - Epic ID: " + EpicID);
 
         try {
-            // Ensure we are on the form page
             checkFormPage(page);
 
-            // Search
             pom.searchPerson(EpicID);
 
-            // Check if record exists
             if (pom.logicToSkip(Crop, GP)) {
                 status = "SKIP";
                 System.out.println("⏭️ Row " + rowIndex + " skipped - already exists");
                 throw new SkipException("Already exists. Skipping: " + EpicID);
             }
 
-            // Fill data
             pom.dataEntry(AadharNo);
             pom.farmerDetails(FarmrName, FathrHusName, Relation, Age, Gender,
                               Caste, MobNo, FarmrCat, EpicIDImg, AadharNo);
@@ -260,13 +286,13 @@ public class MainRunnerClass {
             e.printStackTrace();
             throw e;
         } finally {
-            // Update Excel with test status (adjust method name if different)
             ExcelUtility.updateTestStatus(rowIndex, status);
             System.out.println("📊 Excel updated: Row " + rowIndex + " = " + status);
             System.out.println("----------------------------------------");
         }
     }
 
+    // ─────────────────────────────────────────────────────────────────────────────
     private void checkFormPage(Page page) {
         String url = page.url();
         if (url.contains("login") || url.contains("sign_in") || !url.contains(VARIABLES.NEW_REGISTRATION_URL.split("/")[2])) {
@@ -285,6 +311,7 @@ public class MainRunnerClass {
         }
     }
 
+    // ─────────────────────────────────────────────────────────────────────────────
     @AfterSuite
     public void afterSuite() {
         System.out.println("🔴 Closing all contexts...");
