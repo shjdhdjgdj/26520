@@ -1,9 +1,11 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE suite SYSTEM "https://testng.org/testng-1.0.dtd">
-<suite name="Suite">
-  <test thread-count="5" name="Test">
-    <classes>
-      <class name="com.mainMethod.automation.MainRunnerClass"/>
-    </classes>
-  </test> <!-- Test -->
-</suite> <!-- Suite -->
+<!-- 
+    thread-count and data-provider-thread-count must match
+    PARALLEL_COUNT in MainRunnerClass.java (default: 4)
+ -->
+<suite name="Suite" parallel="methods" thread-count="4" data-provider-thread-count="4">
+<test name="TrueParallelFormFilling">
+<classes>
+<class name="com.mainMethod.automation.MainRunnerClass"/>
+</classes>
+</test>
+</suite>

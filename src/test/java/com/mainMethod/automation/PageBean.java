@@ -4,7 +4,6 @@ import java.io.File;
 import java.io.FileNotFoundException;
 import java.time.Duration;
 
-import org.openqa.selenium.Alert;
 import org.openqa.selenium.By;
 import org.openqa.selenium.Keys;
 import org.openqa.selenium.NoSuchElementException;
@@ -342,10 +341,10 @@ public class PageBean {
 
 		/* File Upload Logic (unchanged) */
 		try {
-			File file1 = new File(VARIABLES.VOTER_FILE_PATH + "\\" + epicIDImage + ".jpg");
-			File file2 = new File(VARIABLES.VOTER_FILE_PATH + "\\" + epicIDImage + ".jpeg");
-			File file3 = new File(VARIABLES.VOTER_FILE_PATH + "\\" + epicIDImage + ".png");
-			File file4 = new File(VARIABLES.VOTER_FILE_PATH + "\\" + epicIDImage + ".pdf");
+			File file1 = new File(VARIABLES.VOTER_FILE_PATH + File.separator + epicIDImage + ".jpg");
+			File file2 = new File(VARIABLES.VOTER_FILE_PATH + File.separator + epicIDImage + ".jpeg");
+			File file3 = new File(VARIABLES.VOTER_FILE_PATH + File.separator + epicIDImage + ".png");
+			File file4 = new File(VARIABLES.VOTER_FILE_PATH + File.separator + epicIDImage + ".pdf");
 
 			if (file1.exists()) voterIDUpload.sendKeys(file1.getAbsolutePath());
 			else if (file2.exists()) voterIDUpload.sendKeys(file2.getAbsolutePath());
@@ -356,10 +355,10 @@ public class PageBean {
 		} catch (Exception e) { e.printStackTrace(); }
 
 		try {
-			File file1 = new File(VARIABLES.AADHAR_FILE_PATH + "\\" + aadharImg + ".jpg");
-			File file2 = new File(VARIABLES.AADHAR_FILE_PATH + "\\" + aadharImg + ".jpeg");
-			File file3 = new File(VARIABLES.AADHAR_FILE_PATH + "\\" + aadharImg + ".png");
-			File file4 = new File(VARIABLES.AADHAR_FILE_PATH + "\\" + aadharImg + ".pdf");
+			File file1 = new File(VARIABLES.AADHAR_FILE_PATH + File.separator + aadharImg + ".jpg");
+			File file2 = new File(VARIABLES.AADHAR_FILE_PATH + File.separator + aadharImg + ".jpeg");
+			File file3 = new File(VARIABLES.AADHAR_FILE_PATH + File.separator + aadharImg + ".png");
+			File file4 = new File(VARIABLES.AADHAR_FILE_PATH + File.separator + aadharImg + ".pdf");
 
 			if (file1.exists()) aadharIDUpload.sendKeys(file1.getAbsolutePath());
 			else if (file2.exists()) aadharIDUpload.sendKeys(file2.getAbsolutePath());
@@ -466,10 +465,10 @@ public class PageBean {
 
 		/* Upload parcha & land document */
 		try {
-			File f1 = new File(VARIABLES.PARCHA_FILE_PATH + "\\" + parchaImg + ".jpg");
-			File f2 = new File(VARIABLES.PARCHA_FILE_PATH + "\\" + parchaImg + ".jpeg");
-			File f3 = new File(VARIABLES.PARCHA_FILE_PATH + "\\" + parchaImg + ".png");
-			File f4 = new File(VARIABLES.PARCHA_FILE_PATH + "\\" + parchaImg + ".pdf");
+			File f1 = new File(VARIABLES.PARCHA_FILE_PATH + File.separator + parchaImg + ".jpg");
+			File f2 = new File(VARIABLES.PARCHA_FILE_PATH + File.separator + parchaImg + ".jpeg");
+			File f3 = new File(VARIABLES.PARCHA_FILE_PATH + File.separator + parchaImg + ".png");
+			File f4 = new File(VARIABLES.PARCHA_FILE_PATH + File.separator + parchaImg + ".pdf");
 
 			if (f1.exists()) cropDetailsParchaUpload.sendKeys(f1.getAbsolutePath());
 			else if (f2.exists()) cropDetailsParchaUpload.sendKeys(f2.getAbsolutePath());
@@ -480,10 +479,10 @@ public class PageBean {
 		} catch (Exception e) { e.printStackTrace(); }
 
 		try {
-			File f1 = new File(VARIABLES.PARCHA_FILE_PATH + "\\" + parchaImg + ".jpg");
-			File f2 = new File(VARIABLES.PARCHA_FILE_PATH + "\\" + parchaImg + ".jpeg");
-			File f3 = new File(VARIABLES.PARCHA_FILE_PATH + "\\" + parchaImg + ".png");
-			File f4 = new File(VARIABLES.PARCHA_FILE_PATH + "\\" + parchaImg + ".pdf");
+			File f1 = new File(VARIABLES.PARCHA_FILE_PATH + File.separator + parchaImg + ".jpg");
+			File f2 = new File(VARIABLES.PARCHA_FILE_PATH + File.separator + parchaImg + ".jpeg");
+			File f3 = new File(VARIABLES.PARCHA_FILE_PATH + File.separator + parchaImg + ".png");
+			File f4 = new File(VARIABLES.PARCHA_FILE_PATH + File.separator + parchaImg + ".pdf");
 
 			if (f1.exists()) landDocumentProofUpload.sendKeys(f1.getAbsolutePath());
 			else if (f2.exists()) landDocumentProofUpload.sendKeys(f2.getAbsolutePath());
@@ -531,10 +530,10 @@ public class PageBean {
 	    // 5. Document Upload
 	    if (bankDocumentProofUpload.isEnabled() && bankDocumentProofUpload.getAttribute("readonly") == null) {
 	        try {
-	            File f1 = new File(VARIABLES.BANK_FILE_PATH + "\\" + accountNumber + ".jpg");
-	            File f2 = new File(VARIABLES.BANK_FILE_PATH + "\\" + accountNumber + ".jpeg");
-	            File f3 = new File(VARIABLES.BANK_FILE_PATH + "\\" + accountNumber + ".png");
-	            File f4 = new File(VARIABLES.BANK_FILE_PATH + "\\" + accountNumber + ".pdf");
+	            File f1 = new File(VARIABLES.BANK_FILE_PATH + File.separator + accountNumber + ".jpg");
+	            File f2 = new File(VARIABLES.BANK_FILE_PATH + File.separator + accountNumber + ".jpeg");
+	            File f3 = new File(VARIABLES.BANK_FILE_PATH + File.separator + accountNumber + ".png");
+	            File f4 = new File(VARIABLES.BANK_FILE_PATH + File.separator + accountNumber + ".pdf");
 
 	            if (f1.exists()) bankDocumentProofUpload.sendKeys(f1.getAbsolutePath());
 	            else if (f2.exists()) bankDocumentProofUpload.sendKeys(f2.getAbsolutePath());
