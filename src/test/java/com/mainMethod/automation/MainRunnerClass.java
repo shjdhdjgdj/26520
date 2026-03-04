@@ -7,6 +7,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Properties;
 import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.Semaphore;
 
 import com.microsoft.playwright.Browser;
 import com.microsoft.playwright.BrowserContext;
@@ -14,7 +15,7 @@ import com.microsoft.playwright.BrowserType;
 import com.microsoft.playwright.Page;
 import com.microsoft.playwright.Playwright;
 import com.microsoft.playwright.PlaywrightException;
-import com.microsoft.playwright.options.LoadState;          // ✅ FIXED: was missing
+import com.microsoft.playwright.options.LoadState;
 
 import org.testng.SkipException;
 import org.testng.annotations.AfterMethod;
@@ -29,6 +30,7 @@ import config.VARIABLES;
 
 public class MainRunnerClass {
 
+    // ── MUST match thread-count in testng.xml ──
     private static final int PARALLEL_COUNT = 2;
 
     private static Playwright playwright;
@@ -38,6 +40,9 @@ public class MainRunnerClass {
     private static final List<BrowserContext>                  allContexts = Collections.synchronizedList(new ArrayList<>());
     private static final ConcurrentLinkedQueue<BrowserContext> contextPool = new ConcurrentLinkedQueue<>();
 
+    // Semaphore: blocks threads beyond PARALLEL_COUNT — prevents pool exhaustion
+    private static Semaphore semaphore;
+
     private static final ThreadLocal<BrowserContext> tlContext = new ThreadLocal<>();
     private static final ThreadLocal<Page>           tlPage    = new ThreadLocal<>();
     private static final ThreadLocal<PageBean>       tlPom     = new ThreadLocal<>();
@@ -46,9 +51,10 @@ public class MainRunnerClass {
     @BeforeSuite
     public void beforeSuite() throws Exception {
         System.out.println("=================================================");
-        System.out.println("✅ PLAYWRIGHT PARALLEL — Multiple windows");
-        System.out.println("   PARALLEL_COUNT = " + PARALLEL_COUNT);
+        System.out.println("✅ PLAYWRIGHT PARALLEL — " + PARALLEL_COUNT + " windows");
         System.out.println("=================================================");
+
+        semaphore = new Semaphore(PARALLEL_COUNT, true);  // fair = no starvation
 
         Properties prop = new Properties();
         try (FileInputStream fis = new FileInputStream("config.properties")) {
@@ -57,50 +63,42 @@ public class MainRunnerClass {
 
         playwright = Playwright.create();
         BrowserType.LaunchOptions opts = new BrowserType.LaunchOptions()
-            .setHeadless(false)
-            .setSlowMo(0);
+            .setHeadless(false).setSlowMo(0);
 
-        String browser_name = prop.getProperty("browser", "chrome").toLowerCase();
-        if (browser_name.equals("firefox")) {
-            browser = playwright.firefox().launch(opts);
-        } else {
-            browser = playwright.chromium().launch(opts);
-        }
+        String browserName = prop.getProperty("browser", "chrome").toLowerCase();
+        browser = browserName.equals("firefox")
+            ? playwright.firefox().launch(opts)
+            : playwright.chromium().launch(opts);
         System.out.println("✅ Browser launched.");
 
-        System.out.println("🚀 Opening login window...");
+        // ── Login / session ────────────────────────────────────────────────────
         BrowserContext masterContext = browser.newContext();
         Page masterPage = masterContext.newPage();
-        masterPage.navigate(VARIABLES.SIGN_IN_PAGE_URL);
-        masterPage.waitForLoadState(LoadState.DOMCONTENTLOADED);
-
         boolean sessionLoaded = false;
+
         if (new java.io.File(SESSION_FILE).exists()) {
-            System.out.println("🍪 Found saved session — trying to reuse...");
+            System.out.println("🍪 Trying saved session...");
             masterContext.close();
             masterContext = browser.newContext(
-                new Browser.NewContextOptions().setStorageStatePath(Paths.get(SESSION_FILE))
-            );
+                new Browser.NewContextOptions().setStorageStatePath(Paths.get(SESSION_FILE)));
             masterPage = masterContext.newPage();
             masterPage.navigate(VARIABLES.NEW_REGISTRATION_URL);
             masterPage.waitForLoadState(LoadState.DOMCONTENTLOADED);
-
-            String url = masterPage.url();
-            if (!url.contains("login") && !url.contains("sign_in")) {
-                System.out.println("✅ Session valid — skipping login.");
+            if (!masterPage.url().contains("sign_in") && !masterPage.url().contains("login")) {
+                System.out.println("✅ Session valid.");
                 sessionLoaded = true;
             } else {
-                System.out.println("⚠ Saved session expired — logging in fresh...");
+                System.out.println("⚠ Session expired — re-logging in...");
                 masterContext.close();
                 masterContext = browser.newContext();
                 masterPage = masterContext.newPage();
-                masterPage.navigate(VARIABLES.SIGN_IN_PAGE_URL);
-                masterPage.waitForLoadState(LoadState.DOMCONTENTLOADED);
             }
         }
 
         if (!sessionLoaded) {
-            System.out.println("⏳ Logging in — please enter OTP when prompted...");
+            masterPage.navigate(VARIABLES.SIGN_IN_PAGE_URL);
+            masterPage.waitForLoadState(LoadState.DOMCONTENTLOADED);
+            System.out.println("⏳ Please enter OTP when prompted...");
             new PageBean(masterPage).login(VARIABLES.EMAIL, VARIABLES.PASSWORD, 1, 2);
             masterPage.navigate(VARIABLES.NEW_REGISTRATION_URL);
             masterPage.waitForLoadState(LoadState.DOMCONTENTLOADED);
@@ -109,89 +107,100 @@ public class MainRunnerClass {
 
         masterContext.storageState(new BrowserContext.StorageStateOptions().setPath(Paths.get(SESSION_FILE)));
         masterContext.close();
-        System.out.println("💾 Session saved to " + SESSION_FILE);
+        System.out.println("💾 Session saved.");
 
+        // ── Create exactly PARALLEL_COUNT contexts ─────────────────────────────
         System.out.println("🌐 Creating " + PARALLEL_COUNT + " contexts...");
         for (int i = 1; i <= PARALLEL_COUNT; i++) {
-            createAndValidateContext(i);
+            BrowserContext ctx = createContext(i);
+            allContexts.add(ctx);
+            contextPool.add(ctx);
         }
-        System.out.println("\n✅ READY — " + PARALLEL_COUNT + " isolated windows.\n");
+        System.out.println("✅ READY — " + PARALLEL_COUNT + " windows.\n");
     }
 
-    private BrowserContext createAndValidateContext(int index) {
+    private BrowserContext createContext(int index) {
         BrowserContext ctx = browser.newContext(
-            new Browser.NewContextOptions().setStorageStatePath(Paths.get(SESSION_FILE))
-        );
+            new Browser.NewContextOptions().setStorageStatePath(Paths.get(SESSION_FILE)));
         Page page = ctx.newPage();
         page.navigate(VARIABLES.NEW_REGISTRATION_URL);
         page.waitForLoadState(LoadState.DOMCONTENTLOADED);
-
         try {
-            page.waitForSelector("//h4[contains(text(),'SBI GENERAL INSURANCE COMPANY LIMITED')]",
-                new Page.WaitForSelectorOptions().setTimeout(15000));   // ✅ FIXED: double ms, not Duration
-            System.out.println("  ✔ Context " + index + " ready (logged in)");
-        } catch (PlaywrightException e) {
-            System.out.println("  ⚠ Context " + index + " — form not detected, recreating...");
-            ctx.close();
-            ctx = browser.newContext(new Browser.NewContextOptions().setStorageStatePath(Paths.get(SESSION_FILE)));
-            page = ctx.newPage();
-            page.navigate(VARIABLES.NEW_REGISTRATION_URL);
-            page.waitForLoadState(LoadState.DOMCONTENTLOADED);
-            page.waitForSelector("//h4[contains(text(),'SBI GENERAL INSURANCE COMPANY LIMITED')]",
+            page.waitForSelector(
+                "//h4[contains(text(),'SBI GENERAL INSURANCE COMPANY LIMITED')]",
                 new Page.WaitForSelectorOptions().setTimeout(15000));
-            System.out.println("  ✔ Context " + index + " recreated and ready");
+            System.out.println("  ✔ Context " + index + " ready");
+        } catch (PlaywrightException e) {
+            System.out.println("  ⚠ Context " + index + " retrying...");
+            page.reload();
+            page.waitForLoadState(LoadState.DOMCONTENTLOADED);
+            page.waitForSelector(
+                "//h4[contains(text(),'SBI GENERAL INSURANCE COMPANY LIMITED')]",
+                new Page.WaitForSelectorOptions().setTimeout(15000));
         }
-        allContexts.add(ctx);
-        contextPool.add(ctx);
         return ctx;
     }
 
     // ─────────────────────────────────────────────────────────────────────────────
     @BeforeMethod
-    public void setupContext() {
+    public void setupContext() throws InterruptedException {
+        // Blocks until a slot is free — guarantees pool never exhausts
+        semaphore.acquire();
+
         BrowserContext ctx = contextPool.poll();
         if (ctx == null) {
-            System.err.println("[Thread-" + Thread.currentThread().getId() + "] Pool exhausted — creating new context");
-            ctx = createAndValidateContext(allContexts.size() + 1);
+            semaphore.release();
+            throw new RuntimeException("Pool empty despite semaphore — check PARALLEL_COUNT vs thread-count");
         }
+
+        // Use the existing page in this context
+        Page page = ctx.pages().isEmpty() ? ctx.newPage() : ctx.pages().get(0);
+
+        try {
+            page.navigate(VARIABLES.NEW_REGISTRATION_URL);
+            page.waitForLoadState(LoadState.DOMCONTENTLOADED);
+            page.waitForSelector(
+                "//h4[contains(text(),'SBI GENERAL INSURANCE COMPANY LIMITED')]",
+                new Page.WaitForSelectorOptions().setTimeout(15000));
+        } catch (PlaywrightException e) {
+            System.err.println("[Thread-" + Thread.currentThread().getId() + "] Context broken — replacing");
+            allContexts.remove(ctx);
+            try { ctx.close(); } catch (Exception ignored) {}
+            ctx = createContext(allContexts.size() + 1);
+            allContexts.add(ctx);
+            page = ctx.pages().get(0);
+        }
+
         tlContext.set(ctx);
-        Page page = ctx.newPage();
         tlPage.set(page);
         tlPom.set(new PageBean(page));
-
-        page.waitForLoadState(LoadState.DOMCONTENTLOADED);
-        checkFormPage(page);
-        System.out.println("[Thread-" + Thread.currentThread().getId() + "] ▶ Context acquired and validated");
+        System.out.println("[Thread-" + Thread.currentThread().getId() + "] ▶ Context acquired");
     }
 
     @AfterMethod
     public void releaseContext() {
         BrowserContext ctx = tlContext.get();
         Page page = tlPage.get();
-        boolean contextValid = true;
 
-        if (ctx != null && page != null) {
+        if (ctx != null) {
             try {
                 page.navigate(VARIABLES.NEW_REGISTRATION_URL);
-                page.waitForSelector("//h4[contains(text(),'SBI GENERAL INSURANCE COMPANY LIMITED')]",
-                    new Page.WaitForSelectorOptions().setTimeout(10000));   // ✅ FIXED: double ms
+                page.waitForLoadState(LoadState.DOMCONTENTLOADED);
+                contextPool.add(ctx);
             } catch (PlaywrightException e) {
-                System.err.println("[Thread-" + Thread.currentThread().getId() + "] Warning: could not reset page: " + e.getMessage());
-                contextValid = false;
-            }
-
-            if (!contextValid) {
+                System.err.println("[Thread-" + Thread.currentThread().getId() + "] Replacing broken context");
                 allContexts.remove(ctx);
                 try { ctx.close(); } catch (Exception ignored) {}
-                createAndValidateContext(allContexts.size() + 1);
-            } else {
-                contextPool.add(ctx);
+                BrowserContext fresh = createContext(allContexts.size() + 1);
+                allContexts.add(fresh);
+                contextPool.add(fresh);
+            } finally {
+                tlContext.remove();
+                tlPage.remove();
+                tlPom.remove();
+                semaphore.release();  // Always release — even on failure
+                System.out.println("[Thread-" + Thread.currentThread().getId() + "] ◀ Released");
             }
-
-            tlContext.remove();
-            tlPage.remove();
-            tlPom.remove();
-            System.out.println("[Thread-" + Thread.currentThread().getId() + "] ◀ released context");
         }
     }
 
@@ -236,19 +245,18 @@ public class MainRunnerClass {
         Page     page = tlPage.get();
         PageBean pom  = tlPom.get();
 
-        System.out.println("[Thread-" + Thread.currentThread().getId() + "] ▶ Processing Row " + rowIndex + " - Epic ID: " + EpicID);
+        System.out.println("[Thread-" + Thread.currentThread().getId() + "] ▶ Row " + rowIndex + " - " + EpicID);
 
         try {
-            checkFormPage(page);
             pom.searchPerson(EpicID);
 
             if (pom.logicToSkip(Crop, GP)) {
                 status = "SKIP";
-                throw new SkipException("Already exists. Skipping: " + EpicID);
+                throw new SkipException("Already exists: " + EpicID);
             }
             if (pom.isAadharPrefilled()) {
                 status = "SKIP";
-                throw new SkipException("Farmer exists. Skipping: " + EpicID);
+                throw new SkipException("Farmer exists: " + EpicID);
             }
 
             pom.dataEntry(AadharNo);
@@ -258,40 +266,21 @@ public class MainRunnerClass {
             pom.bankDetailsEntry(FarmrName, AccNo, AccType, IFSCode);
             pom.submitForm();
 
-            System.out.println("✅ Row " + rowIndex + " completed successfully");
+            System.out.println("✅ Row " + rowIndex + " done");
         } catch (SkipException e) {
             status = "SKIP";
             throw e;
         } catch (Exception e) {
             status = "FAIL";
             System.err.println("❌ Row " + rowIndex + " failed: " + e.getMessage());
-            e.printStackTrace();
             throw e;
         } finally {
             ExcelUtility.updateTestStatus(rowIndex, status);
-            System.out.println("📊 Excel updated: Row " + rowIndex + " = " + status);
-            System.out.println("----------------------------------------");
+            System.out.println("📊 Row " + rowIndex + " = " + status);
         }
     }
 
-    private void checkFormPage(Page page) {
-        String url = page.url();
-        if (url.contains("login") || url.contains("sign_in") || !url.contains(VARIABLES.NEW_REGISTRATION_URL.split("/")[2])) {
-            page.navigate(VARIABLES.NEW_REGISTRATION_URL);
-            page.waitForLoadState(LoadState.DOMCONTENTLOADED);
-        }
-        try {
-            page.waitForSelector("//h4[contains(text(),'SBI GENERAL INSURANCE COMPANY LIMITED')]",
-                new Page.WaitForSelectorOptions().setTimeout(15000));   // ✅ FIXED: double ms
-        } catch (PlaywrightException e) {
-            System.out.println("⚠ Form header not found, reloading...");
-            page.reload();
-            page.waitForLoadState(LoadState.DOMCONTENTLOADED);
-            page.waitForSelector("//h4[contains(text(),'SBI GENERAL INSURANCE COMPANY LIMITED')]",
-                new Page.WaitForSelectorOptions().setTimeout(15000));
-        }
-    }
-
+    // ─────────────────────────────────────────────────────────────────────────────
     @AfterSuite
     public void afterSuite() {
         System.out.println("🔴 Closing all contexts...");
