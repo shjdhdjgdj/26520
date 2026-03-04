@@ -108,7 +108,7 @@ public class MainRunnerClass {
 
         for (int i = 1; i <= PARALLEL_COUNT; i++) {
             // Each worker gets its own temp user-data-dir — completely independent
-            String tempDir = System.getProperty("java.io.tmpdir") + "\SeleniumWorker_" + i;
+            String tempDir = System.getProperty("java.io.tmpdir") + File.separator + "SeleniumWorker_" + i;
             Path tempPath = Paths.get(tempDir);
             if (Files.exists(tempPath)) deleteDirectory(tempPath);
             Files.createDirectories(tempPath);
