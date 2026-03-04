@@ -23,11 +23,21 @@ public class PageBean {
     private void clearAndType(String selector, String value) {
         Locator el = page.locator(selector);
         el.waitFor();
-        el.click();
-        el.selectText();
-        el.fill("");
-        el.type(value); // using type for Bengali support
-        System.out.println("[DEBUG] clearAndType: " + selector + " = " + value);
+        // Check if editable
+        if (isEditable(el)) {
+            el.click();
+            el.selectText();
+            el.fill("");
+            el.type(value);
+            System.out.println("[DEBUG] clearAndType: " + selector + " = " + value);
+        } else {
+            System.out.println("[DEBUG] clearAndType: " + selector + " is not editable, skipping.");
+        }
+    }
+
+    private boolean isEditable(Locator locator) {
+        String readonly = locator.getAttribute("readonly");
+        return readonly == null && locator.isEnabled();
     }
 
     private void waitForOptions(String selector) {
@@ -77,7 +87,7 @@ public class PageBean {
         page.locator("#generate_otp").click();
         Thread.sleep(30000); // OTP entry
 
-        Locator cb = page.locator("//input[@type='checkbox']");
+        Locator cb = page.locator("//input[@type='checkbox']").first();
         if (!cb.isChecked()) cb.check();
 
         page.locator("//button[@class='btn btn-group btn-default btn-animated btn_login']").click();
@@ -89,8 +99,7 @@ public class PageBean {
 
     public void searchPerson(String voterCard) {
         page.waitForSelector("#insure_voter_id");
-        // Uncheck any checkbox that might interfere
-        Locator checkbox = page.locator("//input[@type='checkbox']").first(); // target first checkbox
+        Locator checkbox = page.locator("//input[@type='checkbox']").first();
         if (checkbox.isVisible() && checkbox.isChecked()) {
             checkbox.uncheck();
             System.out.println("[DEBUG] Unchecked checkbox.");
@@ -100,7 +109,6 @@ public class PageBean {
         page.locator("#insur_search").click();
         System.out.println("[DEBUG] Search clicked for: " + voterCard);
 
-        // Wait for search results to load (either crop table or no data message)
         try {
             page.waitForSelector("//tbody[@id='tbodycrop']/tr", new Page.WaitForSelectorOptions().setTimeout(10000));
             System.out.println("[DEBUG] Search results loaded.");
@@ -127,10 +135,21 @@ public class PageBean {
         return false;
     }
 
+    /*─────────────────────── Check if Aadhar is pre-filled (farmer exists) ─────*/
+    public boolean isAadharPrefilled() {
+        Locator aadhar = page.locator("#insure_aadhar_no");
+        String value = aadhar.inputValue();
+        return value != null && !value.trim().isEmpty();
+    }
+
     /*─────────────────────── Aadhar / App Source ───────────────────────────────*/
 
     public void dataEntry(String aadharCard) {
         Locator aadhar = page.locator("#insure_aadhar_no");
+        if (!isEditable(aadhar)) {
+            System.out.println("[DEBUG] Aadhar field is readonly, cannot fill.");
+            return;
+        }
         String currentValue = aadhar.inputValue();
         if (currentValue == null || currentValue.trim().isEmpty()) {
             aadhar.fill(aadharCard);
@@ -153,32 +172,54 @@ public class PageBean {
                               String aadharImg) {
 
         page.waitForSelector("#insure_name");
-        page.locator("#insure_name").fill(name);
-        page.locator("#insure_f_name").fill(fatherHusbandName);
 
-        selectByValue("#insure_f_relation", relationWithFarmer);
-        selectByValue("#insure_age",        age);
-        selectByValue("#insure_gender",     gender);
-        selectByValue("#insure_caste",      caste);
+        // Fill only if editable
+        fillIfEditable("#insure_name", name);
+        fillIfEditable("#insure_f_name", fatherHusbandName);
 
-        page.locator("#insure_mobile_no").fill(mobileNum);
-        selectByValue("#insure_f_category", farmerCategory);
+        // Dropdowns: assume they are enabled if the page allows selection
+        selectByValueIfEnabled("#insure_f_relation", relationWithFarmer);
+        selectByValueIfEnabled("#insure_age", age);
+        selectByValueIfEnabled("#insure_gender", gender);
+        selectByValueIfEnabled("#insure_caste", caste);
+
+        fillIfEditable("#insure_mobile_no", mobileNum);
+        selectByValueIfEnabled("#insure_f_category", farmerCategory);
 
         try { Thread.sleep(1000); } catch (InterruptedException ignored) {}
-        page.locator("#insure_nominee_name").fill("");
+        fillIfEditable("#insure_nominee_name", "");
 
         // Voter ID upload
         String voterFile = findFile(VARIABLES.VOTER_FILE_PATH, epicIDImage);
-        if (voterFile != null) {
+        if (voterFile != null && isEditable(page.locator("#insure_id_proof"))) {
             page.locator("#insure_id_proof").setInputFiles(Paths.get(voterFile));
             System.out.println("[DEBUG] Voter ID uploaded.");
         }
 
         // Aadhar upload
         String aadharFile = findFile(VARIABLES.AADHAR_FILE_PATH, aadharImg);
-        if (aadharFile != null) {
+        if (aadharFile != null && isEditable(page.locator("#insure_aadhar_doc"))) {
             page.locator("#insure_aadhar_doc").setInputFiles(Paths.get(aadharFile));
             System.out.println("[DEBUG] Aadhar doc uploaded.");
+        }
+    }
+
+    private void fillIfEditable(String selector, String value) {
+        Locator loc = page.locator(selector);
+        if (isEditable(loc)) {
+            loc.fill(value);
+            System.out.println("[DEBUG] Filled " + selector + " = " + value);
+        } else {
+            System.out.println("[DEBUG] " + selector + " is not editable, skipping.");
+        }
+    }
+
+    private void selectByValueIfEnabled(String selector, String value) {
+        Locator loc = page.locator(selector);
+        if (loc.isEnabled()) {
+            selectByValue(selector, value);
+        } else {
+            System.out.println("[DEBUG] " + selector + " is disabled, skipping.");
         }
     }
 
@@ -191,8 +232,7 @@ public class PageBean {
         selectByText("#block_id",   block);
         selectByText("#gp_id",      gramPanchayat);
         selectByIndex("#vill_id",   1);
-        page.locator("#pin_code").fill(pin);
-        System.out.println("[DEBUG] Residential address filled.");
+        fillIfEditable("#pin_code", pin);
     }
 
     /*─────────────────────── Crop Details ──────────────────────────────────────*/
@@ -230,11 +270,11 @@ public class PageBean {
         String areaSel = "#insurance_farmer_insurance_applications_attributes_0_insurance_lands_attributes_0_inc_land_in_acer";
         double area = Double.parseDouble(areaInAcre1);
 
-        // Register persistent dialog handler before any action that might trigger it
+        // Register persistent dialog handler
         page.onDialog(Dialog::accept);
         System.out.println("[DEBUG] Dialog handler registered.");
 
-        page.locator(areaSel).fill(areaInAcre1);
+        fillIfEditable(areaSel, areaInAcre1);
 
         String natureSel = "#insurance_farmer_insurance_applications_attributes_0_insurance_lands_attributes_0_nature_of_farmer";
         page.locator(natureSel).click();
@@ -242,11 +282,16 @@ public class PageBean {
 
         String parchaFile = findFile(VARIABLES.PARCHA_FILE_PATH, parchaImg);
         if (parchaFile != null) {
-            page.locator("#insurance_farmer_insurance_applications_attributes_0_insurance_lands_attributes_0_parcha_document")
-                .setInputFiles(Paths.get(parchaFile));
-            page.locator("#insurance_farmer_insurance_applications_attributes_0_land_document")
-                .setInputFiles(Paths.get(parchaFile));
-            System.out.println("[DEBUG] Parcha and land documents uploaded.");
+            Locator parchaDoc = page.locator("#insurance_farmer_insurance_applications_attributes_0_insurance_lands_attributes_0_parcha_document");
+            if (isEditable(parchaDoc)) {
+                parchaDoc.setInputFiles(Paths.get(parchaFile));
+                System.out.println("[DEBUG] Parcha uploaded.");
+            }
+            Locator landDoc = page.locator("#insurance_farmer_insurance_applications_attributes_0_land_document");
+            if (isEditable(landDoc)) {
+                landDoc.setInputFiles(Paths.get(parchaFile));
+                System.out.println("[DEBUG] Land document uploaded.");
+            }
         }
     }
 
@@ -256,17 +301,8 @@ public class PageBean {
                                   String accountType, String ifscCode)
             throws InterruptedException {
 
-        Locator holderName = page.locator("#insurance_farmer_insurance_applications_attributes_0_account_holder_name");
-        if (holderName.isEnabled()) {
-            holderName.fill(name);
-            System.out.println("[DEBUG] Account holder name filled.");
-        }
-
-        Locator accNum = page.locator("#insurance_farmer_insurance_applications_attributes_0_account_number");
-        if (accNum.isEnabled()) {
-            accNum.fill(accountNumber);
-            System.out.println("[DEBUG] Account number filled.");
-        }
+        fillIfEditable("#insurance_farmer_insurance_applications_attributes_0_account_holder_name", name);
+        fillIfEditable("#insurance_farmer_insurance_applications_attributes_0_account_number", accountNumber);
 
         Locator accType = page.locator("#insurance_farmer_insurance_applications_attributes_0_account_type");
         if (accType.isEnabled()) {
@@ -275,22 +311,19 @@ public class PageBean {
             System.out.println("[DEBUG] Account type selected.");
         }
 
-        Locator ifsc = page.locator("#insurance_farmer_insurance_applications_attributes_0_account_ifsc");
-        if (ifsc.isEnabled()) {
-            ifsc.fill(ifscCode);
-            System.out.println("[DEBUG] IFSC code filled.");
-            Locator bank = page.locator("#insurance_farmer_insurance_applications_attributes_0_bank_name");
-            if (bank.isEnabled()) {
-                bank.click();
-                Thread.sleep(500);
-                System.out.println("[DEBUG] Bank name clicked.");
-            }
+        fillIfEditable("#insurance_farmer_insurance_applications_attributes_0_account_ifsc", ifscCode);
+
+        Locator bank = page.locator("#insurance_farmer_insurance_applications_attributes_0_bank_name");
+        if (bank.isEnabled()) {
+            bank.click();
+            Thread.sleep(500);
+            System.out.println("[DEBUG] Bank name clicked.");
         }
 
-        Locator bankDoc = page.locator("#insurance_farmer_insurance_applications_attributes_0_bank_document");
-        if (bankDoc.isEnabled()) {
-            String bankFile = findFile(VARIABLES.BANK_FILE_PATH, accountNumber);
-            if (bankFile != null) {
+        String bankFile = findFile(VARIABLES.BANK_FILE_PATH, accountNumber);
+        if (bankFile != null) {
+            Locator bankDoc = page.locator("#insurance_farmer_insurance_applications_attributes_0_bank_document");
+            if (isEditable(bankDoc)) {
                 bankDoc.setInputFiles(Paths.get(bankFile));
                 System.out.println("[DEBUG] Bank document uploaded.");
             }

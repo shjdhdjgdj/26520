@@ -13,7 +13,7 @@ import com.microsoft.playwright.BrowserContext;
 import com.microsoft.playwright.BrowserType;
 import com.microsoft.playwright.Page;
 import com.microsoft.playwright.Playwright;
-import com.microsoft.playwright.PlaywrightException; // <-- Import for exception
+import com.microsoft.playwright.PlaywrightException;
 
 import org.testng.SkipException;
 import org.testng.annotations.AfterMethod;
@@ -44,7 +44,6 @@ public class MainRunnerClass {
     // ─────────────────────────────────────────────────────────────────────────────
     @BeforeSuite
     public void beforeSuite() throws Exception {
-        // ... (unchanged, same as previous corrected version) ...
         System.out.println("=================================================");
         System.out.println("✅ PLAYWRIGHT PARALLEL — BrowserContext approach");
         System.out.println("   PARALLEL_COUNT = " + PARALLEL_COUNT);
@@ -113,25 +112,39 @@ public class MainRunnerClass {
 
         System.out.println("🌐 Creating " + PARALLEL_COUNT + " parallel contexts...");
         for (int i = 1; i <= PARALLEL_COUNT; i++) {
-            BrowserContext ctx = browser.newContext(
-                new Browser.NewContextOptions().setStorageStatePath(Paths.get(SESSION_FILE))
-            );
-            Page page = ctx.newPage();
-            page.navigate(VARIABLES.NEW_REGISTRATION_URL);
-            page.waitForLoadState();
-
-            try {
-                page.waitForSelector("//h4[contains(text(),'SBI GENERAL INSURANCE COMPANY LIMITED')]",
-                    new Page.WaitForSelectorOptions().setTimeout(15000));
-                System.out.println("  ✔ Context " + i + " ready (logged in)");
-            } catch (Exception e) {
-                System.out.println("  ⚠ Context " + i + " — form not detected, check session");
-            }
-
-            allContexts.add(ctx);
-            contextPool.add(ctx);
+            createAndValidateContext(i);
         }
         System.out.println("\n✅ READY — " + PARALLEL_COUNT + " isolated contexts running in parallel.\n");
+    }
+
+    // Helper to create a new context and verify it's ready
+    private BrowserContext createAndValidateContext(int index) {
+        BrowserContext ctx = browser.newContext(
+            new Browser.NewContextOptions().setStorageStatePath(Paths.get(SESSION_FILE))
+        );
+        Page page = ctx.newPage();
+        page.navigate(VARIABLES.NEW_REGISTRATION_URL);
+        page.waitForLoadState();
+
+        try {
+            page.waitForSelector("//h4[contains(text(),'SBI GENERAL INSURANCE COMPANY LIMITED')]",
+                new Page.WaitForSelectorOptions().setTimeout(15000));
+            System.out.println("  ✔ Context " + index + " ready (logged in)");
+        } catch (Exception e) {
+            System.out.println("  ⚠ Context " + index + " — form not detected, recreating...");
+            ctx.close();
+            ctx = browser.newContext(new Browser.NewContextOptions().setStorageStatePath(Paths.get(SESSION_FILE)));
+            page = ctx.newPage();
+            page.navigate(VARIABLES.NEW_REGISTRATION_URL);
+            page.waitForLoadState();
+            page.waitForSelector("//h4[contains(text(),'SBI GENERAL INSURANCE COMPANY LIMITED')]",
+                new Page.WaitForSelectorOptions().setTimeout(15000));
+            System.out.println("  ✔ Context " + index + " recreated successfully");
+        }
+
+        allContexts.add(ctx);
+        contextPool.add(ctx);
+        return ctx;
     }
 
     // ─────────────────────────────────────────────────────────────────────────────
@@ -140,27 +153,52 @@ public class MainRunnerClass {
         BrowserContext ctx = null;
         while (ctx == null) {
             ctx = contextPool.poll();
-            if (ctx == null) Thread.sleep(300);
+            if (ctx == null) {
+                Thread.sleep(300);
+                continue;
+            }
+
+            // Validate context before using
+            if (!isContextValid(ctx)) {
+                System.out.println("[Thread-" + Thread.currentThread().getId() + "] Context invalid, removing and creating replacement.");
+                allContexts.remove(ctx);
+                try { ctx.close(); } catch (Exception ignored) {}
+                ctx = createAndValidateContext(allContexts.size() + 1); // new index approximate
+            }
         }
 
-        Page page;
-        if (ctx.pages().isEmpty()) {
+        Page page = ctx.pages().isEmpty() ? ctx.newPage() : ctx.pages().get(0);
+        // Double-check page is alive
+        try {
+            page.url();
+        } catch (PlaywrightException e) {
+            System.out.println("[Thread-" + Thread.currentThread().getId() + "] Page detached, creating new page.");
             page = ctx.newPage();
-        } else {
-            page = ctx.pages().get(0);
-            // Verify the page is still valid by checking its URL
-            try {
-                page.url(); // This will throw if page is detached
-            } catch (PlaywrightException e) {
-                System.out.println("[Thread-" + Thread.currentThread().getId() + "] Page detached, creating new page in context.");
-                page = ctx.newPage();
-            }
+            page.navigate(VARIABLES.NEW_REGISTRATION_URL);
+            page.waitForLoadState();
         }
 
         tlContext.set(ctx);
         tlPage.set(page);
         tlPom.set(new PageBean(page));
         System.out.println("[Thread-" + Thread.currentThread().getId() + "] ▶ acquired context");
+    }
+
+    private boolean isContextValid(BrowserContext ctx) {
+        try {
+            if (ctx.pages().isEmpty()) return false;
+            Page page = ctx.pages().get(0);
+            String url = page.url();
+            if (url.contains("about:blank") || url.contains("login") || url.contains("sign_in")) {
+                return false;
+            }
+            // Check for form header
+            page.waitForSelector("//h4[contains(text(),'SBI GENERAL INSURANCE COMPANY LIMITED')]",
+                new Page.WaitForSelectorOptions().setTimeout(5000));
+            return true;
+        } catch (Exception e) {
+            return false;
+        }
     }
 
     // ─────────────────────────────────────────────────────────────────────────────
@@ -181,26 +219,10 @@ public class MainRunnerClass {
             }
 
             if (!contextValid) {
-                // Close the broken context
-                try { ctx.close(); } catch (Exception ignored) {}
-                // Remove it from the global list (safe because allContexts is synchronized)
+                // Replace the broken context
                 allContexts.remove(ctx);
-
-                // Create a brand new context to replace it
-                try {
-                    BrowserContext newCtx = browser.newContext(
-                        new Browser.NewContextOptions().setStorageStatePath(Paths.get(SESSION_FILE))
-                    );
-                    Page newPage = newCtx.newPage();
-                    newPage.navigate(VARIABLES.NEW_REGISTRATION_URL);
-                    newPage.waitForSelector("//h4[contains(text(),'SBI GENERAL INSURANCE COMPANY LIMITED')]",
-                        new Page.WaitForSelectorOptions().setTimeout(15000));
-                    allContexts.add(newCtx);
-                    contextPool.add(newCtx);
-                    System.out.println("[Thread-" + Thread.currentThread().getId() + "] Replaced invalid context with fresh one.");
-                } catch (Exception ex) {
-                    System.err.println("[Thread-" + Thread.currentThread().getId() + "] Failed to create replacement context.");
-                }
+                try { ctx.close(); } catch (Exception ignored) {}
+                createAndValidateContext(allContexts.size() + 1);
             } else {
                 contextPool.add(ctx);
             }
@@ -263,8 +285,15 @@ public class MainRunnerClass {
 
             if (pom.logicToSkip(Crop, GP)) {
                 status = "SKIP";
-                System.out.println("⏭️ Row " + rowIndex + " skipped - already exists");
+                System.out.println("⏭️ Row " + rowIndex + " skipped - already exists (crop/GP match)");
                 throw new SkipException("Already exists. Skipping: " + EpicID);
+            }
+
+            // If Aadhar is already filled, farmer likely exists -> skip entire record
+            if (pom.isAadharPrefilled()) {
+                status = "SKIP";
+                System.out.println("⏭️ Row " + rowIndex + " skipped - farmer already exists (Aadhar pre-filled)");
+                throw new SkipException("Farmer exists. Skipping: " + EpicID);
             }
 
             pom.dataEntry(AadharNo);
@@ -292,7 +321,6 @@ public class MainRunnerClass {
         }
     }
 
-    // ─────────────────────────────────────────────────────────────────────────────
     private void checkFormPage(Page page) {
         String url = page.url();
         if (url.contains("login") || url.contains("sign_in") || !url.contains(VARIABLES.NEW_REGISTRATION_URL.split("/")[2])) {
@@ -311,7 +339,6 @@ public class MainRunnerClass {
         }
     }
 
-    // ─────────────────────────────────────────────────────────────────────────────
     @AfterSuite
     public void afterSuite() {
         System.out.println("🔴 Closing all contexts...");
