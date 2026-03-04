@@ -53,12 +53,43 @@ public class MainRunnerClass {
 
         WebDriverManager.chromedriver().setup();
 
-        // ── Step 2: Launch master Chrome with the real Default profile ────────────
+        // ── Step 2: Kill any Chrome already using the Default profile ─────────────
+        // If Chrome is open with Default profile, Selenium cannot attach to same profile
+        System.out.println("🔍 Checking for existing Chrome processes...");
+        try {
+            Runtime.getRuntime().exec("taskkill /F /IM chrome.exe /T").waitFor();
+            Thread.sleep(2000); // give Chrome time to fully release profile lock
+            System.out.println("✅ Existing Chrome closed (or none was running).");
+        } catch (Exception ignored) {}
+
+        // ── Step 3: Make a temp copy of Default profile for master driver ─────────
+        // Never open Default directly — copy it so we never conflict with user's Chrome
+        String masterProfileName = PROFILE_PREFIX + "master";
+        Path sourceProfile = Paths.get(chromeUserDataDir, "Default");
+        Path masterProfilePath = Paths.get(chromeUserDataDir, masterProfileName);
+
+        System.out.println("📂 Preparing master profile copy...");
+        if (Files.exists(masterProfilePath)) deleteDirectory(masterProfilePath);
+        copyDirectory(sourceProfile, masterProfilePath);
+
+        // ── Step 4: Launch master Chrome using the COPY (not Default directly) ────
         System.out.println("🚀 Launching master Chrome...");
-        WebDriver masterDriver = launchChrome(chromeUserDataDir, "Default");
+        ChromeOptions masterOpts = new ChromeOptions();
+        masterOpts.addArguments(
+            "--user-data-dir=" + chromeUserDataDir,
+            "--profile-directory=" + masterProfileName,
+            "--no-first-run",
+            "--no-default-browser-check",
+            "--disable-extensions",
+            "--disable-notifications",
+            "--disable-popup-blocking",
+            "--remote-debugging-port=0"  // avoid port conflicts
+        );
+        WebDriver masterDriver = new ChromeDriver(masterOpts);
+        masterDriver.manage().window().maximize();
         masterDriver.manage().timeouts().implicitlyWait(Duration.ofSeconds(10));
 
-        // ── Step 3: Check if already logged in (session persists on this machine) ─
+        // ── Step 5: Check if already logged in ───────────────────────────────────
         masterDriver.get(VARIABLES.NEW_REGISTRATION_URL);
         Thread.sleep(3000);
 
@@ -71,17 +102,18 @@ public class MainRunnerClass {
             System.out.println("⏳ Session expired or first run — logging in...");
             masterDriver.get(VARIABLES.SIGN_IN_PAGE_URL);
             new PageBean(masterDriver).login(VARIABLES.EMAIL, VARIABLES.PASSWORD, 1, 2);
-            System.out.println("✅ Login complete. Session saved to profile.");
+            System.out.println("✅ Login complete. Session saved to master profile copy.");
         } else {
             System.out.println("✅ Already logged in — skipping login entirely.");
         }
 
-        // ── Step 4: Quit master so Chrome writes session fully to disk ────────────
+        // ── Step 6: Quit master — flush session to disk, then copy to worker profiles
         masterDriver.quit();
         Thread.sleep(2000);
+        System.out.println("✅ Master Chrome closed. Session flushed to disk.");
 
-        // ── Step 5: Copy Default profile → SeleniumProfile_1 ... _N ─────────────
-        Path sourceProfile = Paths.get(chromeUserDataDir, "Default");
+        // ── Step 7: Copy master profile → SeleniumProfile_1 ... _N ──────────────
+        // Use the master copy (which now has fresh session) as source
         System.out.println("📂 Copying profile " + PARALLEL_COUNT + " times...");
 
         for (int i = 1; i <= PARALLEL_COUNT; i++) {
@@ -89,7 +121,7 @@ public class MainRunnerClass {
             Path   destProfile = Paths.get(chromeUserDataDir, profileName);
 
             if (Files.exists(destProfile)) deleteDirectory(destProfile);
-            copyDirectory(sourceProfile, destProfile);
+            copyDirectory(masterProfilePath, destProfile);  // copy from master (has session)
             copiedProfiles.add(destProfile);
             System.out.println("  ✔ " + profileName);
         }
@@ -288,6 +320,14 @@ public class MainRunnerClass {
             try { d.quit(); } catch (Exception ignored) {}
         }
         System.out.println("🧹 Cleaning up copied profiles...");
+        // also clean up master profile copy
+        try {
+            Path masterCleanup = Paths.get(chromeUserDataDir, PROFILE_PREFIX + "master");
+            if (Files.exists(masterCleanup)) {
+                deleteDirectory(masterCleanup);
+                System.out.println("  ✔ Deleted: " + PROFILE_PREFIX + "master");
+            }
+        } catch (Exception ignored) {}
         for (Path p : copiedProfiles) {
             try {
                 deleteDirectory(p);
