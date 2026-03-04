@@ -49,130 +49,72 @@ public class MainRunnerClass {
     public void beforeSuite() throws Exception {
 
         System.out.println("=================================================");
-        System.out.println("✅ PARALLEL VERSION 4 — cookie-inject approach");
+        System.out.println("✅ PARALLEL VERSION 5 — clean temp + login");
         System.out.println("   PARALLEL_COUNT = " + PARALLEL_COUNT);
         System.out.println("=================================================");
 
-        // ── Step 1: Auto-detect Chrome User Data path ─────────────────────────────
-        chromeUserDataDir = detectChromeUserDataDir();
-        System.out.println("📁 Chrome profile: " + chromeUserDataDir);
         WebDriverManager.chromedriver().setup();
 
-        // ── Step 2: Kill Chrome so Default profile is not locked ─────────────────
-        System.out.println("🔍 Killing any existing Chrome processes...");
-        try {
-            Runtime.getRuntime().exec("taskkill /F /IM chrome.exe /T").waitFor();
-            Thread.sleep(3000);
-            System.out.println("✅ Chrome cleared.");
-        } catch (Exception ignored) {}
+        // ── Step 1: Fresh temp dir for master — avoids Default profile issues ─────
+        String masterTempDir = System.getProperty("java.io.tmpdir") + File.separator + "SeleniumMaster";
+        Path masterTempPath = Paths.get(masterTempDir);
+        if (Files.exists(masterTempPath)) deleteDirectory(masterTempPath);
+        Files.createDirectories(masterTempPath);
 
-        // ── Step 3: Clean up Chrome lock files + reset crash flag ──────────────────
-        // After taskkill, Chrome leaves lock files that cause immediate crash on next launch
-        System.out.println("🧹 Cleaning Chrome lock files...");
-        String[] lockFiles = {
-            chromeUserDataDir + File.separator + "Default" + File.separator + "lockfile",
-            chromeUserDataDir + File.separator + "Default" + File.separator + ".com.google.Chrome",
-            chromeUserDataDir + File.separator + "SingletonLock",
-            chromeUserDataDir + File.separator + "SingletonCookie",
-            chromeUserDataDir + File.separator + "SingletonSocket"
-        };
-        for (String lockFile : lockFiles) {
-            try {
-                java.nio.file.Path lp = Paths.get(lockFile);
-                if (Files.exists(lp)) {
-                    Files.delete(lp);
-                    System.out.println("  ✔ Deleted lock: " + lockFile);
-                }
-            } catch (Exception ignored) {}
-        }
-
-        // Reset exit_type so Chrome doesn't show "Restore pages?" popup
-        try {
-            Path localState = Paths.get(chromeUserDataDir, "Local State");
-            if (Files.exists(localState)) {
-                String state = new String(Files.readAllBytes(localState));
-                state = state.replace("\"exit_type\":\"Crashed\"",  "\"exit_type\":\"Normal\"");
-                state = state.replace("\"exit_type\":\"Abnormal\"", "\"exit_type\":\"Normal\"");
-                Files.write(localState, state.getBytes());
-                System.out.println("✅ Chrome crash flag reset.");
-            }
-        } catch (Exception e) {
-            System.out.println("⚠ Could not reset crash flag: " + e.getMessage());
-        }
-
-        Thread.sleep(1000); // small pause after file cleanup
-
-        // ── Step 4: Launch master on Default — load real session ─────────────────
-        System.out.println("🚀 Launching master Chrome (Default profile)...");
-        WebDriver masterDriver = launchChrome(chromeUserDataDir, "Default");
+        // ── Step 2: Launch master Chrome with clean temp dir ─────────────────────
+        System.out.println("🚀 Launching master Chrome (clean profile)...");
+        WebDriver masterDriver = launchChrome(masterTempDir, "Default");
         masterDriver.manage().timeouts().implicitlyWait(Duration.ofSeconds(10));
+        System.out.println("✅ Master Chrome launched successfully.");
+
+        // ── Step 3: Login — user enters OTP in this window ───────────────────────
+        System.out.println("⏳ Going to login page...");
+        masterDriver.get(VARIABLES.SIGN_IN_PAGE_URL);
+        Thread.sleep(2000);
+        new PageBean(masterDriver).login(VARIABLES.EMAIL, VARIABLES.PASSWORD, 1, 2);
+        System.out.println("✅ Login complete.");
 
         masterDriver.get(VARIABLES.NEW_REGISTRATION_URL);
-        Thread.sleep(4000);
+        Thread.sleep(3000);
 
-        String landedUrl = masterDriver.getCurrentUrl();
-        boolean needsLogin = landedUrl.contains("login")
-                          || landedUrl.contains("sign_in")
-                          || landedUrl.contains("signin");
-
-        if (needsLogin) {
-            System.out.println("⏳ Logging in...");
-            masterDriver.get(VARIABLES.SIGN_IN_PAGE_URL);
-            new PageBean(masterDriver).login(VARIABLES.EMAIL, VARIABLES.PASSWORD, 1, 2);
-            System.out.println("✅ Login complete.");
-            // Navigate to form to ensure session is fully established
-            masterDriver.get(VARIABLES.NEW_REGISTRATION_URL);
-            Thread.sleep(2000);
-        } else {
-            System.out.println("✅ Already logged in.");
-        }
-
-        // ── Step 4: Harvest all session cookies from master ───────────────────────
+        // ── Step 4: Harvest session cookies ──────────────────────────────────────
         System.out.println("🍪 Harvesting session cookies...");
         Set<org.openqa.selenium.Cookie> sessionCookies = masterDriver.manage().getCookies();
-        String currentDomain = masterDriver.getCurrentUrl();
         System.out.println("   Captured " + sessionCookies.size() + " cookies.");
 
         masterDriver.quit();
         Thread.sleep(1000);
         System.out.println("✅ Master Chrome closed.");
 
-        // ── Step 5: Launch N worker Chromes with FRESH temp profiles ─────────────
-        // Fresh profiles = no lock issues, no copy needed, starts instantly
-        // We inject the session cookies after launch
+        // ── Step 5: Launch N worker Chromes — each with fresh temp dir ────────────
         System.out.println("🌐 Launching " + PARALLEL_COUNT + " Chrome instances...");
 
         for (int i = 1; i <= PARALLEL_COUNT; i++) {
-            // Each worker gets its own temp user-data-dir — completely independent
             String tempDir = System.getProperty("java.io.tmpdir") + File.separator + "SeleniumWorker_" + i;
             Path tempPath = Paths.get(tempDir);
             if (Files.exists(tempPath)) deleteDirectory(tempPath);
             Files.createDirectories(tempPath);
-            copiedProfiles.add(tempPath); // track for cleanup
+            copiedProfiles.add(tempPath);
 
-            // Use launchChrome() — gets unique port + all stability flags
             WebDriver d = launchChrome(tempDir, "Default");
             d.manage().timeouts().implicitlyWait(Duration.ofSeconds(10));
 
-            // Navigate to site domain first (cookies require matching domain)
+            // Must visit site domain before setting cookies
             d.get(VARIABLES.SIGN_IN_PAGE_URL);
             Thread.sleep(2000);
 
-            // Inject all session cookies from master
+            // Inject master session cookies
             for (org.openqa.selenium.Cookie cookie : sessionCookies) {
-                try {
-                    d.manage().addCookie(cookie);
-                } catch (Exception ignored) {} // skip if cookie domain doesn't match exactly
+                try { d.manage().addCookie(cookie); } catch (Exception ignored) {}
             }
 
-            // Navigate to form — should be logged in now via injected cookies
+            // Navigate to form — should be logged in via injected cookies
             d.get(VARIABLES.NEW_REGISTRATION_URL);
             Thread.sleep(3000);
 
             String workerUrl = d.getCurrentUrl();
             if (workerUrl.contains("login") || workerUrl.contains("sign_in")) {
-                System.out.println("  ⚠ Instance " + i + " — cookie injection failed, attempting login...");
-                new PageBean(d).login(VARIABLES.EMAIL, VARIABLES.PASSWORD, 1, 2);
+                System.out.println("  ⚠ Instance " + i + " cookie injection failed — manual login needed");
             } else {
                 System.out.println("  ✔ Instance " + i + " ready (logged in via cookies)");
             }
