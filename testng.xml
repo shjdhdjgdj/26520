@@ -1,8 +1,4 @@
-<!-- 
-    thread-count and data-provider-thread-count must match
-    PARALLEL_COUNT in MainRunnerClass.java (default: 4)
- -->
-<suite name="Suite" parallel="methods" thread-count="4" data-provider-thread-count="4">
+<suite name="TestSuite" parallel="methods" thread-count="4" data-provider-thread-count="4">
 <test name="TrueParallelFormFilling">
 <classes>
 <class name="com.mainMethod.automation.MainRunnerClass"/>

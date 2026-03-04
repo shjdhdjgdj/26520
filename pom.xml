@@ -1,82 +1,74 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<project xmlns="http://maven.apache.org/POM/4.0.0"
-         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0
-         http://maven.apache.org/xsd/maven-4.0.0.xsd">
-
-    <modelVersion>4.0.0</modelVersion>
-
-    <groupId>Freelance</groupId>
-    <artifactId>com.projectSetup</artifactId>
-    <version>0.0.1-SNAPSHOT</version>
-
-    <properties>
-        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-        <maven.compiler.release>17</maven.compiler.release>
-    </properties>
-
-    <dependencies>
-
-        <!-- Selenium -->
-        <dependency>
-            <groupId>org.seleniumhq.selenium</groupId>
-            <artifactId>selenium-java</artifactId>
-            <version>4.27.0</version>
-        </dependency>
-
-        <!-- Auto Driver -->
-        <dependency>
-            <groupId>io.github.bonigarcia</groupId>
-            <artifactId>webdrivermanager</artifactId>
-            <version>5.9.2</version>
-        </dependency>
-
-        <!-- Excel -->
-        <dependency>
-            <groupId>org.apache.poi</groupId>
-            <artifactId>poi</artifactId>
-            <version>5.4.0</version>
-        </dependency>
-
-        <dependency>
-            <groupId>org.apache.poi</groupId>
-            <artifactId>poi-ooxml</artifactId>
-            <version>5.4.0</version>
-        </dependency>
-
-        <!-- Reporting -->
-        <dependency>
-            <groupId>com.aventstack</groupId>
-            <artifactId>extentreports</artifactId>
-            <version>5.1.2</version>
-        </dependency>
-
-        <!-- TestNG -->
-        <dependency>
-            <groupId>org.testng</groupId>
-            <artifactId>testng</artifactId>
-            <version>7.9.0</version>
-            <scope>test</scope>
-        </dependency>
-
-    </dependencies>
-
-    <build>
-        <plugins>
-
-            <!-- IMPORTANT: This actually runs your TestNG suite -->
-            <plugin>
-                <groupId>org.apache.maven.plugins</groupId>
-                <artifactId>maven-surefire-plugin</artifactId>
-                <version>3.3.0</version>
-                <configuration>
-                    <suiteXmlFiles>
-                        <suiteXmlFile>testng.xml</suiteXmlFile>
-                    </suiteXmlFiles>
-                </configuration>
-            </plugin>
-
-        </plugins>
-    </build>
-
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+<modelVersion>4.0.0</modelVersion>
+<groupId>com.projectSetup</groupId>
+<artifactId>com.projectSetup</artifactId>
+<version>0.0.1-SNAPSHOT</version>
+<properties>
+<maven.compiler.source>11</maven.compiler.source>
+<maven.compiler.target>11</maven.compiler.target>
+<playwright.version>1.44.0</playwright.version>
+</properties>
+<dependencies>
+<!--  Playwright — replaces Selenium + WebDriverManager entirely  -->
+<dependency>
+<groupId>com.microsoft.playwright</groupId>
+<artifactId>playwright</artifactId>
+<version>${playwright.version}</version>
+</dependency>
+<!--  TestNG  -->
+<dependency>
+<groupId>org.testng</groupId>
+<artifactId>testng</artifactId>
+<version>7.9.0</version>
+<scope>test</scope>
+</dependency>
+<!--  Apache POI — Excel reading (unchanged)  -->
+<dependency>
+<groupId>org.apache.poi</groupId>
+<artifactId>poi</artifactId>
+<version>5.2.3</version>
+</dependency>
+<dependency>
+<groupId>org.apache.poi</groupId>
+<artifactId>poi-ooxml</artifactId>
+<version>5.2.3</version>
+</dependency>
+</dependencies>
+<build>
+<plugins>
+<plugin>
+<groupId>org.apache.maven.plugins</groupId>
+<artifactId>maven-surefire-plugin</artifactId>
+<version>3.3.0</version>
+<configuration>
+<suiteXmlFiles>
+<suiteXmlFile>testng.xml</suiteXmlFile>
+</suiteXmlFiles>
+</configuration>
+</plugin>
+<!--  Downloads Playwright browsers on first run automatically  -->
+<plugin>
+<groupId>org.apache.maven.plugins</groupId>
+<artifactId>maven-antrun-plugin</artifactId>
+<version>3.1.0</version>
+<executions>
+<execution>
+<id>install-playwright-browsers</id>
+<phase>test-compile</phase>
+<goals>
+<goal>run</goal>
+</goals>
+<configuration>
+<target>
+<java classname="com.microsoft.playwright.CLI" classpathref="maven.test.classpath" fork="true" failonerror="false">
+<arg value="install"/>
+<arg value="chromium"/>
+</java>
+</target>
+</configuration>
+</execution>
+</executions>
+</plugin>
+</plugins>
+</build>
 </project>

@@ -1,230 +1,194 @@
 package com.mainMethod.automation;
 
-import java.io.*;
-import java.nio.file.*;
-import java.nio.file.attribute.BasicFileAttributes;
-import java.time.Duration;
+import java.io.FileInputStream;
+import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Properties;
-import java.util.Set;
 import java.util.concurrent.ConcurrentLinkedQueue;
 
-import org.openqa.selenium.By;
-import org.openqa.selenium.JavascriptExecutor;
-import org.openqa.selenium.NoSuchElementException;
-import org.openqa.selenium.WebDriver;
-import org.openqa.selenium.WebElement;
-import org.openqa.selenium.chrome.ChromeDriver;
-import org.openqa.selenium.chrome.ChromeOptions;
-import org.openqa.selenium.support.ui.WebDriverWait;
+import com.microsoft.playwright.Browser;
+import com.microsoft.playwright.BrowserContext;
+import com.microsoft.playwright.BrowserType;
+import com.microsoft.playwright.Page;
+import com.microsoft.playwright.Playwright;
+
 import org.testng.SkipException;
-import org.testng.annotations.*;
+import org.testng.annotations.AfterMethod;
+import org.testng.annotations.AfterSuite;
+import org.testng.annotations.BeforeMethod;
+import org.testng.annotations.BeforeSuite;
+import org.testng.annotations.DataProvider;
+import org.testng.annotations.Test;
 
 import Freelance.com.projectSetup.ExcelUtility;
 import config.VARIABLES;
-import io.github.bonigarcia.wdm.WebDriverManager;
 
 public class MainRunnerClass {
 
-    // ── Tune only this — everything else is auto-detected ────────────────────────
+    // ── Tune only this ────────────────────────────────────────────────────────────
     private static final int PARALLEL_COUNT = 4;
-    private static final String PROFILE_PREFIX = "SeleniumProfile_";
 
-    // ── Resolved at runtime ───────────────────────────────────────────────────────
-    private static String chromeUserDataDir; // auto-detected per machine
+    // ── Shared Playwright + Browser (one process, no profile issues) ──────────────
+    private static Playwright playwright;
+    private static Browser     browser;
 
-    // ── Driver pool ───────────────────────────────────────────────────────────────
-    private static final List<WebDriver>                  allDrivers     = Collections.synchronizedList(new ArrayList<>());
-    private static final ConcurrentLinkedQueue<WebDriver> driverPool     = new ConcurrentLinkedQueue<>();
-    private static final List<Path>                       copiedProfiles = Collections.synchronizedList(new ArrayList<>());
+    // ── Session state file — login once, reuse across all contexts ───────────────
+    private static final String SESSION_FILE = "session.json";
 
-    // ── ThreadLocal — each thread owns one Chrome exclusively ────────────────────
-    private static final ThreadLocal<WebDriver> tlDriver = new ThreadLocal<>();
-    private static final ThreadLocal<PageBean>  tlPom    = new ThreadLocal<>();
+    // ── Context pool — each thread gets its own BrowserContext (= isolated tab) ──
+    private static final List<BrowserContext>                  allContexts  = Collections.synchronizedList(new ArrayList<>());
+    private static final ConcurrentLinkedQueue<BrowserContext> contextPool  = new ConcurrentLinkedQueue<>();
+
+    // ── ThreadLocal — each thread exclusively owns one context + page ─────────────
+    private static final ThreadLocal<BrowserContext> tlContext = new ThreadLocal<>();
+    private static final ThreadLocal<Page>           tlPage    = new ThreadLocal<>();
+    private static final ThreadLocal<PageBean>       tlPom     = new ThreadLocal<>();
 
     // ─────────────────────────────────────────────────────────────────────────────
     @BeforeSuite
     public void beforeSuite() throws Exception {
 
         System.out.println("=================================================");
-        System.out.println("✅ PARALLEL VERSION 5 — clean temp + login");
+        System.out.println("✅ PLAYWRIGHT PARALLEL — BrowserContext approach");
         System.out.println("   PARALLEL_COUNT = " + PARALLEL_COUNT);
         System.out.println("=================================================");
 
-        WebDriverManager.chromedriver().setup();
+        // Load config
+        Properties prop = new Properties();
+        try (FileInputStream fis = new FileInputStream("config.properties")) {
+            prop.load(fis);
+        }
 
-        // ── Step 1: Fresh temp dir for master — avoids Default profile issues ─────
-        String masterTempDir = System.getProperty("java.io.tmpdir") + File.separator + "SeleniumMaster";
-        Path masterTempPath = Paths.get(masterTempDir);
-        if (Files.exists(masterTempPath)) deleteDirectory(masterTempPath);
-        Files.createDirectories(masterTempPath);
+        // ── Step 1: Start Playwright + launch ONE browser ─────────────────────────
+        playwright = Playwright.create();
+        BrowserType.LaunchOptions opts = new BrowserType.LaunchOptions()
+            .setHeadless(false)   // visible browser for OTP entry
+            .setSlowMo(0);
 
-        // ── Step 2: Launch master Chrome with clean temp dir ─────────────────────
-        System.out.println("🚀 Launching master Chrome (clean profile)...");
-        WebDriver masterDriver = launchChrome(masterTempDir, "Default");
-        masterDriver.manage().timeouts().implicitlyWait(Duration.ofSeconds(10));
-        System.out.println("✅ Master Chrome launched successfully.");
+        String browser_name = prop.getProperty("browser", "chrome").toLowerCase();
+        if (browser_name.equals("firefox")) {
+            browser = playwright.firefox().launch(opts);
+        } else {
+            browser = playwright.chromium().launch(opts);
+        }
 
-        // ── Step 3: Login — user enters OTP in this window ───────────────────────
-        System.out.println("⏳ Going to login page...");
-        masterDriver.get(VARIABLES.SIGN_IN_PAGE_URL);
-        Thread.sleep(2000);
-        new PageBean(masterDriver).login(VARIABLES.EMAIL, VARIABLES.PASSWORD, 1, 2);
-        System.out.println("✅ Login complete.");
+        System.out.println("✅ Browser launched.");
 
-        masterDriver.get(VARIABLES.NEW_REGISTRATION_URL);
-        Thread.sleep(3000);
+        // ── Step 2: Login ONCE in a master context ────────────────────────────────
+        System.out.println("🚀 Opening login window...");
+        BrowserContext masterContext = browser.newContext();
+        Page masterPage = masterContext.newPage();
 
-        // ── Step 4: Harvest session cookies ──────────────────────────────────────
-        System.out.println("🍪 Harvesting session cookies...");
-        Set<org.openqa.selenium.Cookie> sessionCookies = masterDriver.manage().getCookies();
-        System.out.println("   Captured " + sessionCookies.size() + " cookies.");
+        masterPage.navigate(VARIABLES.SIGN_IN_PAGE_URL);
+        masterPage.waitForLoadState();
 
-        masterDriver.quit();
-        Thread.sleep(1000);
-        System.out.println("✅ Master Chrome closed.");
+        // Check if already have a saved session
+        boolean sessionLoaded = false;
+        if (new java.io.File(SESSION_FILE).exists()) {
+            System.out.println("🍪 Found saved session — trying to reuse...");
+            masterContext.close();
+            masterContext = browser.newContext(
+                new Browser.NewContextOptions()
+                    .setStorageStatePath(Paths.get(SESSION_FILE))
+            );
+            masterPage = masterContext.newPage();
+            masterPage.navigate(VARIABLES.NEW_REGISTRATION_URL);
+            masterPage.waitForLoadState();
 
-        // ── Step 5: Launch N worker Chromes — each with fresh temp dir ────────────
-        System.out.println("🌐 Launching " + PARALLEL_COUNT + " Chrome instances...");
+            String url = masterPage.url();
+            if (!url.contains("login") && !url.contains("sign_in")) {
+                System.out.println("✅ Session valid — skipping login.");
+                sessionLoaded = true;
+            } else {
+                System.out.println("⚠ Saved session expired — logging in fresh...");
+                masterContext.close();
+                masterContext = browser.newContext();
+                masterPage = masterContext.newPage();
+                masterPage.navigate(VARIABLES.SIGN_IN_PAGE_URL);
+            }
+        }
+
+        if (!sessionLoaded) {
+            System.out.println("⏳ Logging in — please enter OTP when prompted...");
+            new PageBean(masterPage).login(VARIABLES.EMAIL, VARIABLES.PASSWORD, 1, 2);
+            masterPage.navigate(VARIABLES.NEW_REGISTRATION_URL);
+            masterPage.waitForLoadState();
+            System.out.println("✅ Login complete.");
+        }
+
+        // ── Step 3: Save session state to disk ───────────────────────────────────
+        // This captures all cookies + localStorage so workers can reuse it
+        masterContext.storageState(
+            new BrowserContext.StorageStateOptions()
+                .setPath(Paths.get(SESSION_FILE))
+        );
+        masterContext.close();
+        System.out.println("💾 Session saved to " + SESSION_FILE);
+
+        // ── Step 4: Create N BrowserContexts — all pre-logged-in via session ──────
+        // Each context is fully isolated (own cookies, storage, no shared state)
+        // but runs inside the SAME browser process — no profile issues whatsoever
+        System.out.println("🌐 Creating " + PARALLEL_COUNT + " parallel contexts...");
 
         for (int i = 1; i <= PARALLEL_COUNT; i++) {
-            String tempDir = System.getProperty("java.io.tmpdir") + File.separator + "SeleniumWorker_" + i;
-            Path tempPath = Paths.get(tempDir);
-            if (Files.exists(tempPath)) deleteDirectory(tempPath);
-            Files.createDirectories(tempPath);
-            copiedProfiles.add(tempPath);
+            BrowserContext ctx = browser.newContext(
+                new Browser.NewContextOptions()
+                    .setStorageStatePath(Paths.get(SESSION_FILE)) // inject saved session
+            );
+            Page page = ctx.newPage();
+            page.navigate(VARIABLES.NEW_REGISTRATION_URL);
+            page.waitForLoadState();
 
-            WebDriver d = launchChrome(tempDir, "Default");
-            d.manage().timeouts().implicitlyWait(Duration.ofSeconds(10));
-
-            // Must visit site domain before setting cookies
-            d.get(VARIABLES.SIGN_IN_PAGE_URL);
-            Thread.sleep(2000);
-
-            // Inject master session cookies
-            for (org.openqa.selenium.Cookie cookie : sessionCookies) {
-                try { d.manage().addCookie(cookie); } catch (Exception ignored) {}
-            }
-
-            // Navigate to form — should be logged in via injected cookies
-            d.get(VARIABLES.NEW_REGISTRATION_URL);
-            Thread.sleep(3000);
-
-            String workerUrl = d.getCurrentUrl();
-            if (workerUrl.contains("login") || workerUrl.contains("sign_in")) {
-                System.out.println("  ⚠ Instance " + i + " cookie injection failed — manual login needed");
+            String url = page.url();
+            if (url.contains("login") || url.contains("sign_in")) {
+                System.out.println("  ⚠ Context " + i + " — session not accepted, check session.json");
             } else {
-                System.out.println("  ✔ Instance " + i + " ready (logged in via cookies)");
+                System.out.println("  ✔ Context " + i + " ready (logged in)");
             }
 
-            allDrivers.add(d);
-            driverPool.add(d);
+            // Store page inside context so we can retrieve it later
+            ctx.addInitScript("");  // no-op, just to keep context active
+            // We store the page reference via a naming trick using the pool
+            allContexts.add(ctx);
+            contextPool.add(ctx);
+
+            // Keep page accessible — store in context's pages list
+            // (page already attached to ctx, retrievable via ctx.pages().get(0))
         }
 
-        System.out.println("\n✅ TRUE PARALLEL READY — "
-            + PARALLEL_COUNT + " independent Chrome instances running.\n");
-    }
-
-    // ─────────────────────────────────────────────────────────────────────────────
-    // Auto-detect Chrome's User Data directory for Windows / Mac / Linux
-    private String detectChromeUserDataDir() {
-        String os   = System.getProperty("os.name").toLowerCase();
-        String home = System.getProperty("user.home");
-
-        List<String> candidates = new ArrayList<>();
-
-        if (os.contains("win")) {
-            candidates.add(home + "\\AppData\\Local\\Google\\Chrome\\User Data");
-            candidates.add(home + "\\AppData\\Local\\Google\\Chrome Beta\\User Data");
-            candidates.add(home + "\\AppData\\Local\\Chromium\\User Data");
-        } else if (os.contains("mac")) {
-            candidates.add(home + "/Library/Application Support/Google/Chrome");
-            candidates.add(home + "/Library/Application Support/Chromium");
-        } else {
-            // Linux
-            candidates.add(home + "/.config/google-chrome");
-            candidates.add(home + "/.config/chromium");
-        }
-
-        for (String path : candidates) {
-            File f = new File(path);
-            if (f.exists() && f.isDirectory()) {
-                // Verify it looks like a real Chrome profile folder
-                if (new File(f, "Default").exists()) {
-                    return path;
-                }
-            }
-        }
-
-        throw new RuntimeException(
-            "❌ Could not auto-detect Chrome profile folder.\n" +
-            "   Searched: " + candidates + "\n" +
-            "   Please set CHROME_USER_DATA manually in MainRunnerClass.java"
-        );
-    }
-
-    // ─────────────────────────────────────────────────────────────────────────────
-    // Each Chrome gets a unique port — port=0 is unreliable on Windows under Maven
-    private static final java.util.concurrent.atomic.AtomicInteger portCounter
-        = new java.util.concurrent.atomic.AtomicInteger(9222);
-
-    private WebDriver launchChrome(String userDataDir, String profileDir) {
-        int port = portCounter.getAndIncrement(); // 9222, 9223, 9224 ...
-        ChromeOptions opts = new ChromeOptions();
-        opts.addArguments(
-            "--user-data-dir=" + userDataDir,
-            "--profile-directory=" + profileDir,
-            "--remote-debugging-port=" + port,   // explicit unique port — not 0
-            "--no-first-run",
-            "--no-default-browser-check",
-            "--disable-extensions",
-            "--disable-notifications",
-            "--disable-popup-blocking",
-            "--no-sandbox",
-            "--disable-gpu",
-            "--disable-dev-shm-usage",
-            "--disable-background-networking",
-            "--disable-software-rasterizer",
-            "--disable-hang-monitor",
-            "--disable-prompt-on-repost",
-            "--metrics-recording-only",
-            "--safebrowsing-disable-auto-update",
-            "--password-store=basic",
-            "--use-mock-keychain",
-            "--restore-last-session=false",
-            "--disable-session-crashed-bubble",
-            "--hide-crash-restore-bubble"
-        );
-        WebDriver d = new ChromeDriver(opts);
-        d.manage().window().maximize();
-        return d;
+        System.out.println("\n✅ READY — " + PARALLEL_COUNT
+            + " isolated contexts running in parallel.\n");
     }
 
     // ─────────────────────────────────────────────────────────────────────────────
     @BeforeMethod
-    public void acquireDriver() throws InterruptedException {
-        WebDriver driver = null;
-        while (driver == null) {
-            driver = driverPool.poll();
-            if (driver == null) Thread.sleep(300);
+    public void acquireContext() throws InterruptedException {
+        BrowserContext ctx = null;
+        while (ctx == null) {
+            ctx = contextPool.poll();
+            if (ctx == null) Thread.sleep(300);
         }
-        tlDriver.set(driver);
-        tlPom.set(new PageBean(driver));
-        System.out.println("[Thread-" + Thread.currentThread().getId() + "] ▶ acquired Chrome");
+        Page page = ctx.pages().isEmpty() ? ctx.newPage() : ctx.pages().get(0);
+        tlContext.set(ctx);
+        tlPage.set(page);
+        tlPom.set(new PageBean(page));
+        System.out.println("[Thread-" + Thread.currentThread().getId() + "] ▶ acquired context");
     }
 
     @AfterMethod
-    public void releaseDriver() {
-        WebDriver driver = tlDriver.get();
-        if (driver != null) {
-            try { driver.navigate().to(VARIABLES.NEW_REGISTRATION_URL); }
+    public void releaseContext() {
+        BrowserContext ctx = tlContext.get();
+        Page page = tlPage.get();
+        if (ctx != null && page != null) {
+            try { page.navigate(VARIABLES.NEW_REGISTRATION_URL); }
             catch (Exception ignored) {}
-            driverPool.add(driver);
-            tlDriver.remove();
+            contextPool.add(ctx);
+            tlContext.remove();
+            tlPage.remove();
             tlPom.remove();
-            System.out.println("[Thread-" + Thread.currentThread().getId() + "] ◀ released Chrome");
+            System.out.println("[Thread-" + Thread.currentThread().getId() + "] ◀ released context");
         }
     }
 
@@ -265,14 +229,14 @@ public class MainRunnerClass {
         String EpicIDImg    = (String) data[29];
         String ParchaImg    = (String) data[30];
 
-        WebDriver driver = tlDriver.get(); // this thread's exclusive Chrome
-        PageBean  pom    = tlPom.get();
+        Page     page = tlPage.get();
+        PageBean pom  = tlPom.get();
 
         System.out.println("[Thread-" + Thread.currentThread().getId()
             + "] Processing: " + EpicID);
 
-        checkElementWithRetries(driver, VARIABLES.NEW_REGISTRATION_URL,
-            "//h4[contains(text(),'SBI GENERAL INSURANCE COMPANY LIMITED')]", 10, 3);
+        // Ensure form page is loaded
+        checkFormPage(page);
 
         pom.searchPerson(EpicID);
 
@@ -291,95 +255,34 @@ public class MainRunnerClass {
     }
 
     // ─────────────────────────────────────────────────────────────────────────────
-    public void checkElementWithRetries(WebDriver driver, String url, String xpath,
-                                        int maxRetries, int maxReloads)
-            throws InterruptedException {
-        boolean found = false;
-        int retries = 0, reloads = 0;
-
-        while (!found && reloads < maxReloads) {
-            while (retries < maxRetries) {
-                try {
-                    if (driver.findElement(By.xpath(xpath)).isDisplayed()) {
-                        found = true;
-                        break;
-                    }
-                    driver.navigate().refresh();
-                    Thread.sleep(2000);
-                } catch (NoSuchElementException e) {
-                    if (++retries >= maxRetries) {
-                        driver.get(url);
-                        retries = 0;
-                        reloads++;
-                        break;
-                    }
-                }
-            }
+    private void checkFormPage(Page page) {
+        String url = page.url();
+        if (url.contains("login") || url.contains("sign_in") || !url.contains(
+                VARIABLES.NEW_REGISTRATION_URL.split("/")[2])) {
+            page.navigate(VARIABLES.NEW_REGISTRATION_URL);
+            page.waitForLoadState();
+        }
+        // Wait for the form header
+        try {
+            page.waitForSelector(
+                "//h4[contains(text(),'SBI GENERAL INSURANCE COMPANY LIMITED')]",
+                new Page.WaitForSelectorOptions().setTimeout(15000)
+            );
+        } catch (Exception e) {
+            page.reload();
+            page.waitForLoadState();
         }
     }
 
     // ─────────────────────────────────────────────────────────────────────────────
     @AfterSuite
     public void afterSuite() {
-        System.out.println("🔴 Quitting all Chrome instances...");
-        for (WebDriver d : allDrivers) {
-            try { d.quit(); } catch (Exception ignored) {}
+        System.out.println("🔴 Closing all contexts...");
+        for (BrowserContext ctx : allContexts) {
+            try { ctx.close(); } catch (Exception ignored) {}
         }
-        System.out.println("🧹 Cleaning up copied profiles...");
-        // also clean up master profile copy
-        try {
-            Path masterCleanup = Paths.get(chromeUserDataDir, PROFILE_PREFIX + "master");
-            if (Files.exists(masterCleanup)) {
-                deleteDirectory(masterCleanup);
-                System.out.println("  ✔ Deleted: " + PROFILE_PREFIX + "master");
-            }
-        } catch (Exception ignored) {}
-        for (Path p : copiedProfiles) {
-            try {
-                deleteDirectory(p);
-                System.out.println("  ✔ Deleted: " + p.getFileName());
-            } catch (Exception e) {
-                System.out.println("  ⚠ Could not delete: " + p.getFileName());
-            }
-        }
+        if (browser   != null) try { browser.close();     } catch (Exception ignored) {}
+        if (playwright != null) try { playwright.close();  } catch (Exception ignored) {}
         System.out.println("✅ Done.");
-    }
-
-    // ── File utilities ────────────────────────────────────────────────────────────
-    private void copyDirectory(Path source, Path target) throws IOException {
-        Files.walkFileTree(source, new SimpleFileVisitor<Path>() {
-            @Override
-            public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs) throws IOException {
-                Files.createDirectories(target.resolve(source.relativize(dir)));
-                return FileVisitResult.CONTINUE;
-            }
-            @Override
-            public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException {
-                try {
-                    Files.copy(file, target.resolve(source.relativize(file)),
-                        StandardCopyOption.REPLACE_EXISTING);
-                } catch (IOException ignored) {} // skip locked files (e.g. Chrome lock)
-                return FileVisitResult.CONTINUE;
-            }
-            @Override
-            public FileVisitResult visitFileFailed(Path file, IOException exc) {
-                return FileVisitResult.CONTINUE;
-            }
-        });
-    }
-
-    private void deleteDirectory(Path path) throws IOException {
-        Files.walkFileTree(path, new SimpleFileVisitor<Path>() {
-            @Override
-            public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException {
-                try { Files.delete(file); } catch (IOException ignored) {}
-                return FileVisitResult.CONTINUE;
-            }
-            @Override
-            public FileVisitResult postVisitDirectory(Path dir, IOException exc) throws IOException {
-                try { Files.delete(dir); } catch (IOException ignored) {}
-                return FileVisitResult.CONTINUE;
-            }
-        });
     }
 }
