@@ -138,6 +138,8 @@ public class MainRunnerClass {
                 "//h4[contains(text(),'SBI GENERAL INSURANCE COMPANY LIMITED')]",
                 new Page.WaitForSelectorOptions().setTimeout(15000));
         }
+        // Close validation page — each thread opens its own fresh page in setupContext
+        try { page.close(); } catch (Exception ignored) {}
         return ctx;
     }
 
@@ -153,8 +155,11 @@ public class MainRunnerClass {
             throw new RuntimeException("Pool empty despite semaphore — check PARALLEL_COUNT vs thread-count");
         }
 
-        // Use the existing page in this context
-        Page page = ctx.pages().isEmpty() ? ctx.newPage() : ctx.pages().get(0);
+        // Close stale pages and open a fresh one — avoids "adopt" cross-thread errors
+        for (Page stale : ctx.pages()) {
+            try { stale.close(); } catch (Exception ignored) {}
+        }
+        Page page = ctx.newPage();
 
         try {
             page.navigate(VARIABLES.NEW_REGISTRATION_URL);
@@ -168,7 +173,13 @@ public class MainRunnerClass {
             try { ctx.close(); } catch (Exception ignored) {}
             ctx = createContext(allContexts.size() + 1);
             allContexts.add(ctx);
-            page = ctx.pages().get(0);
+            // createContext already opened a page — close it and open fresh
+            for (Page stale : ctx.pages()) {
+                try { stale.close(); } catch (Exception ignored) {}
+            }
+            page = ctx.newPage();
+            page.navigate(VARIABLES.NEW_REGISTRATION_URL);
+            page.waitForLoadState(LoadState.DOMCONTENTLOADED);
         }
 
         tlContext.set(ctx);
@@ -184,21 +195,25 @@ public class MainRunnerClass {
 
         if (ctx != null) {
             try {
-                page.navigate(VARIABLES.NEW_REGISTRATION_URL);
-                page.waitForLoadState(LoadState.DOMCONTENTLOADED);
+                // Close the used page — next thread will open a fresh one
+                try { page.close(); } catch (Exception ignored) {}
                 contextPool.add(ctx);
             } catch (PlaywrightException e) {
                 System.err.println("[Thread-" + Thread.currentThread().getId() + "] Replacing broken context");
                 allContexts.remove(ctx);
                 try { ctx.close(); } catch (Exception ignored) {}
                 BrowserContext fresh = createContext(allContexts.size() + 1);
+                // Close the page createContext opened — setupContext will open a fresh one
+                for (Page stale : fresh.pages()) {
+                    try { stale.close(); } catch (Exception ignored) {}
+                }
                 allContexts.add(fresh);
                 contextPool.add(fresh);
             } finally {
                 tlContext.remove();
                 tlPage.remove();
                 tlPom.remove();
-                semaphore.release();  // Always release — even on failure
+                semaphore.release();
                 System.out.println("[Thread-" + Thread.currentThread().getId() + "] ◀ Released");
             }
         }
